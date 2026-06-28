@@ -139,6 +139,12 @@ docker build -t servmgr:latest .
 
 Requires Docker with BuildKit. The build is multi-stage: Node 22 for the SvelteKit frontend, then Rust 1.87 for the backend, assembled into a `debian:bookworm-slim` final image.
 
+## Documentation
+
+- [User Guide](docs/user-guide.md) — full setup, configuration reference, Home Assistant integration, troubleshooting
+- [Data Model](docs/data-model.md)
+- [Technical Notes](docs/technical.md)
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).

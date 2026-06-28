@@ -6,26 +6,49 @@ servmgr is a home network server manager. It monitors server health and lets you
 
 ## Quick Start
 
-### Docker (recommended)
+### Docker Compose (recommended)
 
-1. Create a config directory:
-   ```bash
-   mkdir -p ./config
-   ```
+Create a `docker-compose.yml`:
 
-2. Run the container:
-   ```bash
-   docker run \
-     --network host \
-     --cap-add NET_RAW \
-     -e PORT=8080 \
-     -v ./config:/config \
-     servmgr
-   ```
+```yaml
+services:
+  servmgr:
+    image: ghcr.io/thomfab/servmgr:latest
+    container_name: servmgr
+    network_mode: host          # required for Wake-on-LAN and ICMP ping
+    cap_add:
+      - NET_RAW                 # required for raw socket ping
+    volumes:
+      - ./config:/config        # config.yaml and SSH keys live here
+    restart: unless-stopped
+```
 
-3. Open http://localhost:8080 in your browser.
+Then:
 
-4. Go to the Config page and add your servers.
+```bash
+mkdir -p config
+docker compose up -d
+```
+
+Open http://localhost:8080, go to the **Config** tab, and add your servers.
+
+> **Port binding instead of host networking** — if you don't need WoL or ping, you can drop `network_mode: host` and expose the port explicitly:
+> ```yaml
+>     ports:
+>       - "8080:8080"
+> ```
+
+### Docker run
+
+```bash
+docker run -d \
+  --name servmgr \
+  --network host \
+  --cap-add NET_RAW \
+  -v ./config:/config \
+  --restart unless-stopped \
+  ghcr.io/thomfab/servmgr:latest
+```
 
 ### Example Configuration
 

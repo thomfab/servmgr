@@ -1,0 +1,556 @@
+<script lang="ts">
+	import type { ServerState, HistoryEntry, PowerLogEntry } from '$lib/types';
+	import { forcePowerOn, forcePowerOff, getHistory, getPowerLog } from '$lib/api';
+
+	let { server, onPowerOn, onPowerOff }: {
+		server: ServerState;
+		onPowerOn: () => void;
+		onPowerOff: () => void;
+	} = $props();
+
+	function statusBadge(s: typeof server): { label: string; color: string } {
+		if (s.power_state !== 'on') {
+			switch (s.power_state) {
+				case 'off':         return { label: 'Off',      color: 'var(--color-text-muted)' };
+				case 'pending_on':  return { label: 'Starting', color: 'var(--color-blue)' };
+				case 'pending_off': return { label: 'Stopping', color: 'var(--color-blue)' };
+				case 'failed':      return { label: 'Failed',   color: 'var(--color-orange)' };
+				default:            return { label: s.power_state, color: 'var(--color-text-muted)' };
+			}
+		}
+		const okCount = s.checks.filter(c => c.ok).length;
+		if (s.checks.length === 0 || okCount === s.checks.length)
+			return { label: 'On',       color: 'var(--color-green)' };
+		if (okCount === 0)
+			return { label: 'Off',      color: 'var(--color-text-muted)' };
+		return     { label: 'Degraded', color: 'var(--color-orange)' };
+	}
+
+	let badge = $derived(statusBadge(server));
+	let hasError = $derived(!!server.config_error);
+
+	// History popup
+	let showHistory = $state(false);
+	let historyRange = $state<'day' | 'week'>('day');
+	let historyEntries = $state<HistoryEntry[]>([]);
+	let historyLoading = $state(false);
+
+	async function openHistory() {
+		showHistory = true;
+		await loadHistory();
+	}
+
+	async function loadHistory() {
+		historyLoading = true;
+		const from = new Date(Date.now() - (historyRange === 'week' ? 7 : 1) * 86400_000).toISOString();
+		historyEntries = await getHistory(server.id, from);
+		historyLoading = false;
+	}
+
+	async function toggleRange(r: 'day' | 'week') {
+		historyRange = r;
+		await loadHistory();
+	}
+
+	// Power log popup
+	let showLog = $state(false);
+	let logEntries = $state<PowerLogEntry[]>([]);
+	let logLoading = $state(false);
+
+	async function openLog() {
+		showLog = true;
+		logLoading = true;
+		logEntries = await getPowerLog(server.id);
+		logLoading = false;
+	}
+
+	function fmtTime(ts: string) {
+		return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+	}
+
+	function fmtTimeShort(ts: string) {
+		return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+	}
+
+	function segmentColor(status: string, powerState: string): string {
+		if (powerState === 'off' || powerState === 'pending_off') return '#3a3a3a';
+		if (status === 'up') return 'var(--color-green)';
+		if (status === 'degraded') return 'var(--color-orange)';
+		return 'var(--color-red)';
+	}
+
+	type Segment = { flex: number; color: string; title: string };
+
+	function computeSegments(entries: HistoryEntry[]): Segment[] {
+		if (entries.length === 0) return [];
+		const now = Date.now();
+		const first = new Date(entries[0].timestamp).getTime();
+		const total = now - first;
+		if (total === 0) return [];
+		return entries.map((e, i) => {
+			const from = new Date(e.timestamp).getTime();
+			const to = i + 1 < entries.length ? new Date(entries[i + 1].timestamp).getTime() : now;
+			return {
+				flex: (to - from) / total,
+				color: segmentColor(e.status, e.power_state),
+				title: `${fmtTime(e.timestamp)}\n${e.status} · ${e.power_state}`
+			};
+		});
+	}
+
+	let segments = $derived(computeSegments(historyEntries));
+	let rangeStartLabel = $derived(historyEntries.length > 0 ? fmtTimeShort(historyEntries[0].timestamp) : '');
+
+	async function handleForceOn() { await forcePowerOn(server.id); }
+	async function handleForceOff() { await forcePowerOff(server.id); }
+</script>
+
+<div class="card" class:has-error={hasError}>
+	<div class="header">
+		<div>
+			<a href="/servers/{server.id}" class="name">{server.name}</a>
+			<span class="hostname">{server.hostname}</span>
+		</div>
+		<div class="header-right">
+			<button class="btn-log" onclick={openLog} title="Power command log">Log</button>
+			<button class="badge-btn" style="background: {badge.color}" onclick={openHistory} title="Status history">
+				{badge.label}
+			</button>
+		</div>
+	</div>
+
+	{#if server.config_error}
+		<div class="error-banner">{server.config_error}</div>
+	{/if}
+
+	<div class="checks">
+		{#each server.checks as check}
+			<div class="check">
+				<span class="check-icon" style="color: {check.ok ? 'var(--color-green)' : 'var(--color-red)'}">
+					{check.ok ? '●' : '○'}
+				</span>
+				<span class="check-type">{check.type}{check.port ? `:${check.port}` : ''}</span>
+			</div>
+		{/each}
+	</div>
+
+	{#if server.depends_on.length > 0}
+		<div class="deps">
+			<span class="deps-label">depends on</span>
+			{#each server.depends_on as dep}
+				<span class="dep-tag">{dep}</span>
+			{/each}
+		</div>
+	{/if}
+
+	<div class="footer">
+		<div class="counter-display" title="Reference counter">
+			{server.counter}
+		</div>
+		<div class="actions">
+			<div class="main-actions">
+				<button class="btn-counter-up" onclick={onPowerOn} disabled={hasError}>+1</button>
+				<button class="btn-counter-down" onclick={onPowerOff} disabled={hasError}>-1</button>
+			</div>
+			<div class="force-actions">
+				<button class="btn-force" onclick={handleForceOn} disabled={hasError}>Force On</button>
+				<button class="btn-force" onclick={handleForceOff} disabled={hasError}>Force Off</button>
+			</div>
+		</div>
+	</div>
+
+	{#if server.last_checked}
+		<span class="timestamp">checked {(() => {
+			const mins = Math.floor((Date.now() - new Date(server.last_checked).getTime()) / 60000);
+			if (mins < 1) return 'just now';
+			if (mins === 1) return '1 min ago';
+			return `${mins} min ago`;
+		})()}</span>
+	{/if}
+</div>
+
+<!-- History popup -->
+{#if showHistory}
+	<div class="overlay" onclick={() => showHistory = false} role="presentation">
+		<div class="popup" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Status history">
+			<div class="popup-header">
+				<span class="popup-title">Status history — {server.name}</span>
+				<div class="range-toggle">
+					<button class:active={historyRange === 'day'} onclick={() => toggleRange('day')}>1 day</button>
+					<button class:active={historyRange === 'week'} onclick={() => toggleRange('week')}>1 week</button>
+				</div>
+				<button class="close-btn" onclick={() => showHistory = false}>✕</button>
+			</div>
+			<div class="popup-body">
+				{#if historyLoading}
+					<p class="muted">Loading…</p>
+				{:else if segments.length === 0}
+					<p class="muted">No history available.</p>
+				{:else}
+					<div class="history-graph">
+						<div class="history-bar">
+							{#each segments as seg}
+								<div
+									class="seg"
+									style="flex: {seg.flex}; background: {seg.color}"
+									title={seg.title}
+								></div>
+							{/each}
+						</div>
+						<div class="bar-axis">
+							<span>{rangeStartLabel}</span>
+							<span>now</span>
+						</div>
+						<div class="bar-legend">
+							<span class="legend-item"><span class="legend-dot" style="background: var(--color-green)"></span>up</span>
+							<span class="legend-item"><span class="legend-dot" style="background: var(--color-orange)"></span>degraded</span>
+							<span class="legend-item"><span class="legend-dot" style="background: var(--color-red)"></span>down</span>
+							<span class="legend-item"><span class="legend-dot" style="background: #3a3a3a"></span>off</span>
+						</div>
+					</div>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Power log popup -->
+{#if showLog}
+	<div class="overlay" onclick={() => showLog = false} role="presentation">
+		<div class="popup" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Power command log">
+			<div class="popup-header">
+				<span class="popup-title">Command log — {server.name}</span>
+				<button class="close-btn" onclick={() => showLog = false}>✕</button>
+			</div>
+			<div class="popup-body">
+				{#if logLoading}
+					<p class="muted">Loading…</p>
+				{:else if logEntries.length === 0}
+					<p class="muted">No commands recorded yet.</p>
+				{:else}
+					<div class="log-list">
+						{#each logEntries as entry}
+							<div class="log-entry" class:log-fail={!entry.success}>
+								<div class="log-header">
+									<span class="log-icon">{entry.success ? '✓' : '✗'}</span>
+									<span class="log-cmd">{entry.command}</span>
+									<span class="log-time">{fmtTime(entry.timestamp)}</span>
+								</div>
+								{#if entry.message}
+									<pre class="log-output">{entry.message}</pre>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
+
+<style>
+	.card {
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+	.card.has-error {
+		border-color: var(--color-orange);
+	}
+	.header {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+	}
+	.header-right {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-shrink: 0;
+	}
+	.name {
+		font-weight: 600;
+		font-size: 1.1rem;
+		color: var(--color-text);
+	}
+	.hostname {
+		display: block;
+		color: var(--color-text-muted);
+		font-size: 0.8rem;
+	}
+	.badge-btn {
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.2rem 0.5rem;
+		border-radius: 4px;
+		color: #000;
+		border: none;
+		cursor: pointer;
+		line-height: 1.4;
+	}
+	.btn-log {
+		font-size: 0.7rem;
+		padding: 0.2rem 0.4rem;
+		background: var(--color-border);
+		color: var(--color-text-muted);
+		border: none;
+		border-radius: 4px;
+		cursor: pointer;
+	}
+	.btn-log:hover {
+		color: var(--color-text);
+	}
+	.error-banner {
+		background: rgba(249, 115, 22, 0.1);
+		border: 1px solid var(--color-orange);
+		border-radius: 4px;
+		padding: 0.5rem;
+		font-size: 0.8rem;
+		color: var(--color-orange);
+	}
+	.checks {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.check {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.8rem;
+	}
+	.check-type {
+		color: var(--color-text-muted);
+	}
+	.deps {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+	}
+	.deps-label {
+		font-size: 0.7rem;
+		color: var(--color-text-muted);
+	}
+	.dep-tag {
+		font-size: 0.7rem;
+		background: rgba(59, 130, 246, 0.15);
+		color: var(--color-blue);
+		padding: 0.15rem 0.4rem;
+		border-radius: 3px;
+		font-weight: 500;
+	}
+	.footer {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		margin-top: auto;
+	}
+	.counter-display {
+		font-size: 1.75rem;
+		font-weight: 700;
+		min-width: 3rem;
+		text-align: center;
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+		padding: 0.25rem 0.75rem;
+	}
+	.actions {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		flex: 1;
+	}
+	.main-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.main-actions button {
+		flex: 1;
+		padding: 0.6rem 1rem;
+		font-size: 0.9rem;
+	}
+	.btn-counter-up {
+		background: rgba(34, 197, 94, 0.12);
+		color: var(--color-green);
+	}
+	.btn-counter-down {
+		background: rgba(239, 68, 68, 0.12);
+		color: var(--color-red);
+	}
+	.force-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.btn-force {
+		flex: 1;
+		background: var(--color-border);
+		color: var(--color-text-muted);
+		font-size: 0.7rem;
+		padding: 0.25rem 0.5rem;
+	}
+	.timestamp {
+		font-size: 0.7rem;
+		color: var(--color-text-muted);
+	}
+
+	/* Popups */
+	.overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
+	}
+	.popup {
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+		width: min(520px, 92vw);
+		max-height: 70vh;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+	.popup-header {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.75rem 1rem;
+		border-bottom: 1px solid var(--color-border);
+		flex-shrink: 0;
+	}
+	.popup-title {
+		font-weight: 600;
+		font-size: 0.9rem;
+		flex: 1;
+	}
+	.close-btn {
+		background: none;
+		border: none;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		font-size: 1rem;
+		padding: 0.1rem 0.3rem;
+	}
+	.close-btn:hover {
+		color: var(--color-text);
+	}
+	.range-toggle {
+		display: flex;
+		gap: 0.25rem;
+	}
+	.range-toggle button {
+		font-size: 0.75rem;
+		padding: 0.15rem 0.5rem;
+		background: var(--color-border);
+		color: var(--color-text-muted);
+		border: none;
+		border-radius: 3px;
+		cursor: pointer;
+	}
+	.range-toggle button.active {
+		background: var(--color-blue);
+		color: #fff;
+	}
+	.popup-body {
+		overflow-y: auto;
+		padding: 1rem;
+		flex: 1;
+	}
+	.muted {
+		color: var(--color-text-muted);
+		font-size: 0.85rem;
+	}
+
+	/* History graph */
+	.history-graph {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.history-bar {
+		display: flex;
+		height: 36px;
+		border-radius: 4px;
+		overflow: hidden;
+		gap: 1px;
+		background: var(--color-border);
+	}
+	.seg {
+		min-width: 2px;
+		cursor: default;
+		transition: filter 0.1s;
+	}
+	.seg:hover {
+		filter: brightness(1.3);
+	}
+	.bar-axis {
+		display: flex;
+		justify-content: space-between;
+		font-size: 0.7rem;
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+	.bar-legend {
+		display: flex;
+		gap: 1rem;
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+		margin-top: 0.25rem;
+	}
+	.legend-item {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+	}
+	.legend-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+
+	/* Power log */
+	.log-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		font-size: 0.8rem;
+	}
+	.log-entry {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.log-header {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.log-icon { font-size: 0.85rem; color: var(--color-green); }
+	.log-entry.log-fail .log-icon { color: var(--color-red); }
+	.log-cmd { font-weight: 600; color: var(--color-text); }
+	.log-time { color: var(--color-text-muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+	.log-output {
+		margin: 0;
+		padding: 0.5rem 0.6rem;
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		border-radius: 4px;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+		white-space: pre-wrap;
+		word-break: break-all;
+		font-family: monospace;
+		max-height: 8rem;
+		overflow-y: auto;
+	}
+</style>

@@ -79,7 +79,16 @@
 		}
 	}
 
-	type Segment = { flex: number; color: string; title: string };
+	function statusLabel(s: string): string {
+		const map: Record<string, string> = {
+			on: 'On', off: 'Off',
+			turning_on: 'Turning On', turning_off: 'Turning Off',
+			degraded: 'Degraded', up: 'On', down: 'Off'
+		};
+		return map[s] ?? s;
+	}
+
+	type Segment = { flex: number; color: string; status: string; time: string };
 
 	function computeSegments(entries: HistoryEntry[]): Segment[] {
 		if (entries.length === 0) return [];
@@ -93,12 +102,13 @@
 			return {
 				flex: (to - from) / total,
 				color: segmentColor(e.status),
-				title: `${fmtTime(e.timestamp)}\n${e.status}`
+				status: e.status,
+				time: fmtTime(e.timestamp)
 			};
 		});
 	}
 
-	type CounterPoint = { x: number; y: number }; // x: 0-100 %, y: counter value
+	type CounterPoint = { x: number; y: number };
 
 	function computeCounterPoints(entries: HistoryEntry[]): CounterPoint[] {
 		if (entries.length === 0) return [];
@@ -106,17 +116,15 @@
 		const first = new Date(entries[0].timestamp).getTime();
 		const total = now - first;
 		if (total === 0) return [];
-		// Build step-line: each entry holds until next entry
 		const pts: CounterPoint[] = [];
 		for (let i = 0; i < entries.length; i++) {
 			const t = (new Date(entries[i].timestamp).getTime() - first) / total * 100;
 			pts.push({ x: t, y: entries[i].counter });
 			if (i + 1 < entries.length) {
 				const t2 = (new Date(entries[i + 1].timestamp).getTime() - first) / total * 100;
-				pts.push({ x: t2, y: entries[i].counter }); // horizontal step
+				pts.push({ x: t2, y: entries[i].counter });
 			}
 		}
-		// Extend last value to now
 		pts.push({ x: 100, y: entries[entries.length - 1].counter });
 		return pts;
 	}
@@ -130,6 +138,42 @@
 	let counterPoints = $derived(computeCounterPoints(historyEntries));
 	let counterMax = $derived(Math.max(1, ...historyEntries.map(e => e.counter)));
 	let rangeStartLabel = $derived(historyEntries.length > 0 ? fmtTimeShort(historyEntries[0].timestamp) : '');
+
+	// Hover tooltips
+	let tooltip = $state<{ x: number; y: number; label: string; time: string } | null>(null);
+	let counterHover = $state<{ pct: number; cy: number } | null>(null);
+
+	function showSegTooltip(e: MouseEvent, seg: Segment) {
+		tooltip = { x: e.clientX, y: e.clientY, label: statusLabel(seg.status), time: seg.time };
+	}
+
+	function hideTooltip() {
+		tooltip = null;
+		counterHover = null;
+	}
+
+	function entryAtPct(pct: number): HistoryEntry {
+		const now = Date.now();
+		const first = new Date(historyEntries[0].timestamp).getTime();
+		const total = now - first;
+		const targetTime = first + pct * total;
+		let best = historyEntries[0];
+		for (const entry of historyEntries) {
+			if (new Date(entry.timestamp).getTime() <= targetTime) best = entry;
+		}
+		return best;
+	}
+
+	function handleCounterMove(e: MouseEvent) {
+		if (historyEntries.length === 0) return;
+		const svg = e.currentTarget as SVGElement;
+		const rect = svg.getBoundingClientRect();
+		const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+		const entry = entryAtPct(pct);
+		const cy = 40 - (entry.counter / counterMax) * 40;
+		counterHover = { pct: pct * 100, cy };
+		tooltip = { x: e.clientX, y: e.clientY, label: `×${entry.counter}`, time: fmtTime(entry.timestamp) };
+	}
 
 	async function handleForceOn() { await forcePowerOn(server.id); }
 	async function handleForceOff() { await forcePowerOff(server.id); }
@@ -201,7 +245,7 @@
 
 <!-- History popup -->
 {#if showHistory}
-	<div class="overlay" onclick={() => showHistory = false} role="presentation">
+	<div class="overlay" onclick={() => { showHistory = false; hideTooltip(); }} role="presentation">
 		<div class="popup" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Status history">
 			<div class="popup-header">
 				<span class="popup-title">Status history — {server.name}</span>
@@ -210,7 +254,7 @@
 					<button class:active={historyRange === 'day'}  onclick={() => toggleRange('day')}>1 day</button>
 					<button class:active={historyRange === 'week'} onclick={() => toggleRange('week')}>1 week</button>
 				</div>
-				<button class="close-btn" onclick={() => showHistory = false}>✕</button>
+				<button class="close-btn" onclick={() => { showHistory = false; hideTooltip(); }}>✕</button>
 			</div>
 			<div class="popup-body">
 				{#if historyLoading}
@@ -224,7 +268,8 @@
 								<div
 									class="seg"
 									style="flex: {seg.flex}; background: {seg.color}"
-									title={seg.title}
+									onmousemove={(e) => showSegTooltip(e, seg)}
+									onmouseleave={hideTooltip}
 								></div>
 							{/each}
 						</div>
@@ -241,7 +286,13 @@
 
 						<div class="counter-chart-label">Counter</div>
 						<div class="counter-chart">
-							<svg viewBox="0 0 100 40" preserveAspectRatio="none" class="counter-svg">
+							<svg
+								viewBox="0 0 100 40"
+								preserveAspectRatio="none"
+								class="counter-svg"
+								onmousemove={handleCounterMove}
+								onmouseleave={hideTooltip}
+							>
 								<polyline
 									points={pointsToPolyline(counterPoints, counterMax, 40)}
 									fill="none"
@@ -249,6 +300,24 @@
 									stroke-width="1.5"
 									vector-effect="non-scaling-stroke"
 								/>
+								{#if counterHover}
+									<line
+										x1={counterHover.pct} y1="0"
+										x2={counterHover.pct} y2="40"
+										stroke="rgba(255,255,255,0.12)"
+										stroke-width="0.8"
+										vector-effect="non-scaling-stroke"
+									/>
+									<circle
+										cx={counterHover.pct}
+										cy={counterHover.cy}
+										r="2.5"
+										fill="var(--color-blue)"
+										stroke="var(--color-bg)"
+										stroke-width="1.5"
+										vector-effect="non-scaling-stroke"
+									/>
+								{/if}
 							</svg>
 							<div class="counter-y-labels">
 								<span>{counterMax}</span>
@@ -293,6 +362,17 @@
 				{/if}
 			</div>
 		</div>
+	</div>
+{/if}
+
+<!-- Floating tooltip (rendered above all overlays) -->
+{#if tooltip}
+	<div
+		class="tooltip"
+		style="left: {tooltip.x + 14}px; top: {tooltip.y - 52}px"
+	>
+		<span class="tooltip-label">{tooltip.label}</span>
+		<span class="tooltip-time">{tooltip.time}</span>
 	</div>
 {/if}
 
@@ -534,7 +614,7 @@
 	}
 	.seg {
 		min-width: 2px;
-		cursor: default;
+		cursor: crosshair;
 		transition: filter 0.1s;
 	}
 	.seg:hover {
@@ -583,6 +663,7 @@
 		border: 1px solid var(--color-border);
 		border-radius: 3px;
 		background: var(--color-bg);
+		cursor: crosshair;
 	}
 	.counter-y-labels {
 		display: flex;
@@ -592,6 +673,30 @@
 		color: var(--color-text-muted);
 		font-variant-numeric: tabular-nums;
 		padding: 1px 0;
+	}
+
+	/* Hover tooltip */
+	.tooltip {
+		position: fixed;
+		z-index: 200;
+		background: #0a0c12;
+		border: 1px solid var(--color-border);
+		border-radius: 5px;
+		padding: 0.3rem 0.6rem;
+		font-size: 0.72rem;
+		pointer-events: none;
+		white-space: nowrap;
+		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+	}
+	.tooltip-label {
+		font-weight: 600;
+		color: var(--color-text);
+	}
+	.tooltip-time {
+		color: var(--color-text-muted);
 	}
 
 	/* Power log */

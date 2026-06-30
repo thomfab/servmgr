@@ -73,8 +73,7 @@
 		<section>
 			<h2>Status</h2>
 			<div class="status-row">
-				<span>Power: <strong>{server.power_state}</strong></span>
-				<span>Health: <strong>{server.status}</strong></span>
+				<span>Status: <strong>{server.status}</strong></span>
 				<span>Counter: <strong>{server.counter}</strong></span>
 			</div>
 			{#if server.callers.length > 0}
@@ -110,7 +109,7 @@
 						<div class="history-entry">
 							<span class="time">{new Date(entry.timestamp).toLocaleTimeString()}</span>
 							<span class="status-badge {entry.status}">{entry.status}</span>
-							<span class="power-badge">{entry.power_state}</span>
+							<span class="counter-badge">×{entry.counter}</span>
 						</div>
 					{/each}
 				</div>
@@ -232,10 +231,11 @@
 		font-size: 0.75rem;
 		font-weight: 600;
 	}
-	.status-badge.up { background: var(--color-green); color: #000; }
-	.status-badge.degraded { background: var(--color-amber); color: #000; }
-	.status-badge.down { background: var(--color-red); color: #fff; }
-	.power-badge {
+	.status-badge.on { background: var(--color-green); color: #000; }
+	.status-badge.degraded { background: var(--color-orange); color: #000; }
+	.status-badge.turning_on, .status-badge.turning_off { background: var(--color-blue); color: #fff; }
+	.status-badge.off { background: var(--color-border); color: var(--color-text-muted); }
+	.counter-badge {
 		color: var(--color-text-muted);
 		font-size: 0.75rem;
 	}

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 
-use crate::types::{CheckResult, PowerState, ServerStatus};
+use crate::types::{CheckResult, HealthStatus, PowerState, ServerStatus, display_status_from_str};
 
 pub async fn create_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {
     let url = format!("sqlite:{db_path}?mode=rwc");
@@ -70,6 +70,11 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Add counter column to status_history if it doesn't exist (migration for existing DBs)
+    let _ = sqlx::query("ALTER TABLE status_history ADD COLUMN counter INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     Ok(())
 }
 
@@ -89,7 +94,7 @@ pub struct ServerRow {
     pub power_state: PowerState,
     pub counter: i32,
     pub callers: Vec<String>,
-    pub status: ServerStatus,
+    pub status: HealthStatus,
     pub checks: Vec<CheckResult>,
     pub last_checked: Option<DateTime<Utc>>,
     pub config_error: Option<String>,
@@ -127,11 +132,7 @@ fn parse_server_row(row: &sqlx::sqlite::SqliteRow) -> ServerRow {
 
     let power_state = PowerState::from_str(&power_state_str).unwrap_or(PowerState::Off);
     let callers: Vec<String> = serde_json::from_str(&callers_json).unwrap_or_default();
-    let status = match status_str.as_str() {
-        "up" => ServerStatus::Up,
-        "degraded" => ServerStatus::Degraded,
-        _ => ServerStatus::Down,
-    };
+    let status = HealthStatus::from_str(&status_str);
     let checks: Vec<CheckResult> = serde_json::from_str(&checks_json).unwrap_or_default();
     let last_checked = last_checked_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
@@ -192,22 +193,19 @@ pub async fn set_counter(
 pub async fn update_health_status(
     pool: &SqlitePool,
     server_id: &str,
-    status: ServerStatus,
+    health: HealthStatus,
+    display_status: &str,
     checks: &[CheckResult],
+    counter: i32,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    let status_str = match status {
-        ServerStatus::Up => "up",
-        ServerStatus::Degraded => "degraded",
-        ServerStatus::Down => "down",
-    };
     let checks_json = serde_json::to_string(checks).unwrap_or_else(|_| "[]".to_string());
     let timestamp = now.to_rfc3339();
 
     sqlx::query(
         "UPDATE server_state SET status = ?, checks = ?, last_checked = ? WHERE id = ?",
     )
-    .bind(status_str)
+    .bind(health.as_str())
     .bind(&checks_json)
     .bind(&timestamp)
     .bind(server_id)
@@ -215,10 +213,11 @@ pub async fn update_health_status(
     .await?;
 
     sqlx::query(
-        "INSERT INTO status_history (server_id, status, power_state, checks, timestamp) SELECT id, ?, power_state, ?, ? FROM server_state WHERE id = ?",
+        "INSERT INTO status_history (server_id, status, power_state, checks, counter, timestamp) SELECT id, ?, power_state, ?, ?, ? FROM server_state WHERE id = ?",
     )
-    .bind(status_str)
+    .bind(display_status)
     .bind(&checks_json)
+    .bind(counter)
     .bind(&timestamp)
     .bind(server_id)
     .execute(pool)
@@ -303,9 +302,9 @@ pub async fn get_power_log(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub server_id: String,
-    pub status: String,
-    pub power_state: String,
+    pub status: ServerStatus,
     pub checks: Vec<CheckResult>,
+    pub counter: i32,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -321,7 +320,7 @@ pub async fn get_history(
     let to_str = to.unwrap_or_else(Utc::now).to_rfc3339();
 
     let rows = sqlx::query(
-        "SELECT server_id, status, power_state, checks, timestamp FROM status_history WHERE server_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+        "SELECT server_id, status, checks, counter, timestamp FROM status_history WHERE server_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
     )
     .bind(server_id)
     .bind(&from_str)
@@ -335,9 +334,9 @@ pub async fn get_history(
             let checks_json: String = row.get("checks");
             HistoryEntry {
                 server_id: row.get("server_id"),
-                status: row.get("status"),
-                power_state: row.get("power_state"),
+                status: display_status_from_str(&row.get::<String, _>("status")),
                 checks: serde_json::from_str(&checks_json).unwrap_or_default(),
+                counter: row.get::<i32, _>("counter"),
                 timestamp: row
                     .get::<String, _>("timestamp")
                     .parse()

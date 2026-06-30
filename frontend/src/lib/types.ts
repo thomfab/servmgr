@@ -1,5 +1,4 @@
-export type PowerState = 'off' | 'pending_on' | 'on' | 'pending_off' | 'failed';
-export type ServerStatus = 'up' | 'degraded' | 'down';
+export type ServerStatus = 'off' | 'on' | 'turning_on' | 'turning_off' | 'degraded';
 export type HealthCheckType = 'ping' | 'http' | 'tcp' | 'ssh' | 'ipmi_power';
 
 export interface CheckResult {
@@ -13,10 +12,10 @@ export interface ServerState {
 	id: string;
 	name: string;
 	hostname: string;
-	power_state: PowerState;
 	counter: number;
 	callers: string[];
 	status: ServerStatus;
+	power_timeout: number;
 	checks: CheckResult[];
 	last_checked: string | null;
 	config_error: string | null;
@@ -25,9 +24,9 @@ export interface ServerState {
 
 export interface HistoryEntry {
 	server_id: string;
-	status: string;
-	power_state: string;
+	status: ServerStatus;
 	checks: CheckResult[];
+	counter: number;
 	timestamp: string;
 }
 

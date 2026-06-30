@@ -2,6 +2,16 @@
 
 Home network server manager — a self-hosted dashboard for powering servers on and off on demand, with dependency tracking, health monitoring, and reference counting.
 
+## The origin
+
+I run Home Assistant at home. it helps me automate a few things, among them turning my servers on and off. I have a NAS, a Emby/TVHeadEnd server, an ESXi server and they should only be on when needed (when we watch TV, for backups...). Until now I used Home Assistant to manage them. Everything is available (wake on lan, IPMI, ssh command, Synology plug-in, command line sensors, REST sensors...), but you need to assemble it and in the end it comes down to quite a large configuration. 
+
+The more complex part is that I just don't turn on and off the server, I manage a counter (0 to n): when the counter goes from 0 to 1 server turns on, when it goes from 1 to 0 it turns off. All events just increment or decrement the counter. That way TV does not suddenly stop because the recording that was in progress finished and the automation decided to turn the TVHeadEnd server off.
+
+I wanted to externalise this feature from Home Assistant, but could not find an application doing just that, so Claude helped me create one.
+
+A word of warning: the app is basic and only intended for a home setup running in a simple "mostly secure" LAN (to be safer do not expose anything to the Internet, use VPNs). So there is not authorisation, and secrets are stored in plain text in the config file. It might change in the future but treat accordingly for now.
+
 ## What it does
 
 - **Reference-counted power management**: servers stay on as long as at least one caller needs them, and shut down automatically when the counter reaches zero

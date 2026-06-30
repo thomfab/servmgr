@@ -16,6 +16,7 @@ use crate::health;
 use crate::power;
 use crate::types::*;
 
+
 pub struct AppState {
     pub pool: SqlitePool,
     pub config: ConfigHandle,
@@ -95,17 +96,18 @@ impl AppState {
         let status = health::compute_status(&checks);
         let now = Utc::now();
 
-        if let Err(e) = db::update_health_status(&self.pool, &server.id, status, &checks, now).await {
-            error!("Failed to update health for {}: {e}", server.id);
-            return;
-        }
-
-        // Check state transitions
+        // Check state transitions and record history with display status
         if let Ok(Some(row)) = db::get_server_state(&self.pool, &server.id).await {
+            let disp_str = display_status_str(row.power_state, row.counter, status);
+            if let Err(e) = db::update_health_status(&self.pool, &server.id, status, disp_str, &checks, row.counter, now).await {
+                error!("Failed to update health for {}: {e}", server.id);
+                return;
+            }
+
             let new_power_state = match (row.power_state, status) {
-                (PowerState::PendingOn, ServerStatus::Up) => Some(PowerState::On),
-                (PowerState::PendingOff, ServerStatus::Down) => Some(PowerState::Off),
-                (PowerState::Failed, ServerStatus::Up) => Some(PowerState::On),
+                (PowerState::PendingOn, HealthStatus::Up) => Some(PowerState::On),
+                (PowerState::PendingOff, HealthStatus::Down) => Some(PowerState::Off),
+                (PowerState::Failed, HealthStatus::Up) => Some(PowerState::On),
                 _ => None,
             };
 
@@ -140,10 +142,10 @@ impl AppState {
         for server in &config.servers {
             if let Ok(Some(row)) = db::get_server_state(&self.pool, &server.id).await {
                 let reconciled = match (row.power_state, row.status) {
-                    (PowerState::On | PowerState::PendingOn, ServerStatus::Down) => {
+                    (PowerState::On | PowerState::PendingOn, HealthStatus::Down) => {
                         Some(PowerState::Off)
                     }
-                    (PowerState::Off | PowerState::PendingOff, ServerStatus::Up) => {
+                    (PowerState::Off | PowerState::PendingOff, HealthStatus::Up) => {
                         Some(PowerState::On)
                     }
                     _ => None,
@@ -257,7 +259,7 @@ impl AppState {
     }
 
     async fn power_on_sequence(self: &Arc<Self>, server: &ServerConfig, cancel: CancellationToken) {
-        let timeout = Duration::from_secs(server.power_on_timeout_secs);
+        let timeout = Duration::from_secs(server.power_timeout_secs);
         let start = tokio::time::Instant::now();
 
         // Wait for dependencies to be up
@@ -271,7 +273,7 @@ impl AppState {
                     return;
                 }
                 if let Ok(Some(dep_row)) = db::get_server_state(&self.pool, dep_id).await {
-                    if dep_row.status == ServerStatus::Up {
+                    if dep_row.status == HealthStatus::Up {
                         break;
                     }
                 }
@@ -523,10 +525,10 @@ impl AppState {
             id: row.id,
             name: server_config.name.clone(),
             hostname: server_config.hostname.clone(),
-            power_state: row.power_state,
             counter: row.counter,
             callers: row.callers,
-            status: row.status,
+            status: compute_display_status(row.power_state, row.counter, row.status),
+            power_timeout: server_config.power_timeout_secs,
             checks: row.checks,
             last_checked: row.last_checked,
             config_error: row.config_error,
@@ -545,10 +547,10 @@ impl AppState {
                     id: row.id,
                     name: server_config.name.clone(),
                     hostname: server_config.hostname.clone(),
-                    power_state: row.power_state,
                     counter: row.counter,
                     callers: row.callers,
-                    status: row.status,
+                    status: compute_display_status(row.power_state, row.counter, row.status),
+                    power_timeout: server_config.power_timeout_secs,
                     checks: row.checks,
                     last_checked: row.last_checked,
                     config_error: row.config_error,

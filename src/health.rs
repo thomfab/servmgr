@@ -4,19 +4,19 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
-use crate::types::{CheckResult, HealthCheckConfig, HealthCheckType, PowerOffMethod, PowerOnMethod, ServerConfig, ServerStatus};
+use crate::types::{CheckResult, HealthCheckConfig, HealthCheckType, HealthStatus, PowerOffMethod, PowerOnMethod, ServerConfig};
 
-pub fn compute_status(checks: &[CheckResult]) -> ServerStatus {
+pub fn compute_status(checks: &[CheckResult]) -> HealthStatus {
     if checks.is_empty() {
-        return ServerStatus::Down;
+        return HealthStatus::Down;
     }
     let passing = checks.iter().filter(|c| c.ok).count();
     if passing == checks.len() {
-        ServerStatus::Up
+        HealthStatus::Up
     } else if passing > 0 {
-        ServerStatus::Degraded
+        HealthStatus::Degraded
     } else {
-        ServerStatus::Down
+        HealthStatus::Down
     }
 }
 

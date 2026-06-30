@@ -9,21 +9,14 @@
 	} = $props();
 
 	function statusBadge(s: typeof server): { label: string; color: string } {
-		if (s.power_state !== 'on') {
-			switch (s.power_state) {
-				case 'off':         return { label: 'Off',      color: 'var(--color-text-muted)' };
-				case 'pending_on':  return { label: 'Starting', color: 'var(--color-blue)' };
-				case 'pending_off': return { label: 'Stopping', color: 'var(--color-blue)' };
-				case 'failed':      return { label: 'Failed',   color: 'var(--color-orange)' };
-				default:            return { label: s.power_state, color: 'var(--color-text-muted)' };
-			}
+		switch (s.status) {
+			case 'on':          return { label: 'On',          color: 'var(--color-green)' };
+			case 'off':         return { label: 'Off',         color: 'var(--color-text-muted)' };
+			case 'turning_on':  return { label: 'Turning On',  color: 'var(--color-blue)' };
+			case 'turning_off': return { label: 'Turning Off', color: 'var(--color-blue)' };
+			case 'degraded':    return { label: 'Degraded',    color: 'var(--color-orange)' };
+			default:            return { label: s.status,      color: 'var(--color-text-muted)' };
 		}
-		const okCount = s.checks.filter(c => c.ok).length;
-		if (s.checks.length === 0 || okCount === s.checks.length)
-			return { label: 'On',       color: 'var(--color-green)' };
-		if (okCount === 0)
-			return { label: 'Off',      color: 'var(--color-text-muted)' };
-		return     { label: 'Degraded', color: 'var(--color-orange)' };
 	}
 
 	let badge = $derived(statusBadge(server));
@@ -31,7 +24,7 @@
 
 	// History popup
 	let showHistory = $state(false);
-	let historyRange = $state<'day' | 'week'>('day');
+	let historyRange = $state<'2h' | 'day' | 'week'>('day');
 	let historyEntries = $state<HistoryEntry[]>([]);
 	let historyLoading = $state(false);
 
@@ -42,12 +35,13 @@
 
 	async function loadHistory() {
 		historyLoading = true;
-		const from = new Date(Date.now() - (historyRange === 'week' ? 7 : 1) * 86400_000).toISOString();
+		const msMap = { '2h': 2 * 3600_000, 'day': 86400_000, 'week': 7 * 86400_000 };
+		const from = new Date(Date.now() - msMap[historyRange]).toISOString();
 		historyEntries = await getHistory(server.id, from);
 		historyLoading = false;
 	}
 
-	async function toggleRange(r: 'day' | 'week') {
+	async function toggleRange(r: '2h' | 'day' | 'week') {
 		historyRange = r;
 		await loadHistory();
 	}
@@ -72,11 +66,17 @@
 		return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 	}
 
-	function segmentColor(status: string, powerState: string): string {
-		if (powerState === 'off' || powerState === 'pending_off') return '#3a3a3a';
-		if (status === 'up') return 'var(--color-green)';
-		if (status === 'degraded') return 'var(--color-orange)';
-		return 'var(--color-red)';
+	function segmentColor(status: string): string {
+		switch (status) {
+			case 'on':  return 'var(--color-green)';
+			case 'turning_on': case 'turning_off': return 'var(--color-blue)';
+			case 'degraded': return 'var(--color-orange)';
+			case 'off': return '#3a3a3a';
+			// legacy history values
+			case 'up': return 'var(--color-green)';
+			case 'down': return '#3a3a3a';
+			default: return 'var(--color-red)';
+		}
 	}
 
 	type Segment = { flex: number; color: string; title: string };
@@ -92,13 +92,43 @@
 			const to = i + 1 < entries.length ? new Date(entries[i + 1].timestamp).getTime() : now;
 			return {
 				flex: (to - from) / total,
-				color: segmentColor(e.status, e.power_state),
-				title: `${fmtTime(e.timestamp)}\n${e.status} · ${e.power_state}`
+				color: segmentColor(e.status),
+				title: `${fmtTime(e.timestamp)}\n${e.status}`
 			};
 		});
 	}
 
+	type CounterPoint = { x: number; y: number }; // x: 0-100 %, y: counter value
+
+	function computeCounterPoints(entries: HistoryEntry[]): CounterPoint[] {
+		if (entries.length === 0) return [];
+		const now = Date.now();
+		const first = new Date(entries[0].timestamp).getTime();
+		const total = now - first;
+		if (total === 0) return [];
+		// Build step-line: each entry holds until next entry
+		const pts: CounterPoint[] = [];
+		for (let i = 0; i < entries.length; i++) {
+			const t = (new Date(entries[i].timestamp).getTime() - first) / total * 100;
+			pts.push({ x: t, y: entries[i].counter });
+			if (i + 1 < entries.length) {
+				const t2 = (new Date(entries[i + 1].timestamp).getTime() - first) / total * 100;
+				pts.push({ x: t2, y: entries[i].counter }); // horizontal step
+			}
+		}
+		// Extend last value to now
+		pts.push({ x: 100, y: entries[entries.length - 1].counter });
+		return pts;
+	}
+
+	function pointsToPolyline(pts: CounterPoint[], maxY: number, h: number): string {
+		if (pts.length === 0 || maxY === 0) return '';
+		return pts.map(p => `${p.x},${h - (p.y / maxY) * h}`).join(' ');
+	}
+
 	let segments = $derived(computeSegments(historyEntries));
+	let counterPoints = $derived(computeCounterPoints(historyEntries));
+	let counterMax = $derived(Math.max(1, ...historyEntries.map(e => e.counter)));
 	let rangeStartLabel = $derived(historyEntries.length > 0 ? fmtTimeShort(historyEntries[0].timestamp) : '');
 
 	async function handleForceOn() { await forcePowerOn(server.id); }
@@ -176,7 +206,8 @@
 			<div class="popup-header">
 				<span class="popup-title">Status history — {server.name}</span>
 				<div class="range-toggle">
-					<button class:active={historyRange === 'day'} onclick={() => toggleRange('day')}>1 day</button>
+					<button class:active={historyRange === '2h'}   onclick={() => toggleRange('2h')}>2h</button>
+					<button class:active={historyRange === 'day'}  onclick={() => toggleRange('day')}>1 day</button>
 					<button class:active={historyRange === 'week'} onclick={() => toggleRange('week')}>1 week</button>
 				</div>
 				<button class="close-btn" onclick={() => showHistory = false}>✕</button>
@@ -202,10 +233,27 @@
 							<span>now</span>
 						</div>
 						<div class="bar-legend">
-							<span class="legend-item"><span class="legend-dot" style="background: var(--color-green)"></span>up</span>
+							<span class="legend-item"><span class="legend-dot" style="background: var(--color-green)"></span>on</span>
+							<span class="legend-item"><span class="legend-dot" style="background: var(--color-blue)"></span>turning</span>
 							<span class="legend-item"><span class="legend-dot" style="background: var(--color-orange)"></span>degraded</span>
-							<span class="legend-item"><span class="legend-dot" style="background: var(--color-red)"></span>down</span>
 							<span class="legend-item"><span class="legend-dot" style="background: #3a3a3a"></span>off</span>
+						</div>
+
+						<div class="counter-chart-label">Counter</div>
+						<div class="counter-chart">
+							<svg viewBox="0 0 100 40" preserveAspectRatio="none" class="counter-svg">
+								<polyline
+									points={pointsToPolyline(counterPoints, counterMax, 40)}
+									fill="none"
+									stroke="var(--color-blue)"
+									stroke-width="1.5"
+									vector-effect="non-scaling-stroke"
+								/>
+							</svg>
+							<div class="counter-y-labels">
+								<span>{counterMax}</span>
+								<span>0</span>
+							</div>
 						</div>
 					</div>
 				{/if}
@@ -516,6 +564,34 @@
 		height: 8px;
 		border-radius: 2px;
 		flex-shrink: 0;
+	}
+
+	.counter-chart-label {
+		font-size: 0.7rem;
+		color: var(--color-text-muted);
+		margin-top: 0.5rem;
+	}
+	.counter-chart {
+		display: flex;
+		align-items: stretch;
+		gap: 0.4rem;
+		height: 56px;
+	}
+	.counter-svg {
+		flex: 1;
+		display: block;
+		border: 1px solid var(--color-border);
+		border-radius: 3px;
+		background: var(--color-bg);
+	}
+	.counter-y-labels {
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		font-size: 0.65rem;
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
+		padding: 1px 0;
 	}
 
 	/* Power log */

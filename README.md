@@ -129,7 +129,7 @@ servers:
 | `depends_on` | List of server IDs that must be running first |
 | `health_checks` | List of checks (see below) |
 | `check_interval_secs` | Seconds between health checks (default: 30) |
-| `power_on_timeout_secs` | Seconds before a pending-on transitions to failed (default: 300) |
+| `power_timeout_secs` | Duration of the turning_on/turning_off window during power transitions (default: 300) |
 
 ### Health check types
 

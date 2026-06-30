@@ -109,7 +109,7 @@ servers:
 | `ssh_shutdown_cmd` | No | Shutdown command (default: `sudo shutdown -h now`) |
 | `depends_on` | No | Array of server IDs this server depends on |
 | `check_interval_secs` | No | Health check interval (default: 30) |
-| `power_on_timeout_secs` | No | Power on timeout before marking failed (default: 300) |
+| `power_timeout_secs` | No | Duration of the turning_on/turning_off window during power transitions (default: 300) |
 
 ### Health check types
 
@@ -127,10 +127,10 @@ servers:
 
 The main page shows all servers as cards with:
 - Server name and hostname
-- Power state badge (On/Off/Starting/Stopping/Failed)
+- Status badge (On / Off / Turning On / Turning Off / Degraded)
 - Health check results with latency
 - Reference counter
-- Power On / Power Off buttons
+- +1 / -1 counter buttons and Force On / Force Off buttons
 
 Cards update in real-time via Server-Sent Events — no page refresh needed.
 
@@ -192,27 +192,27 @@ sensor:
     resource: "http://servmgr-host:8080/api/servers/nas"
     json_attributes:
       - counter
-      - power_state
-      - health
-    value_template: "{{ value_json.power_state }}"
+      - status
+    value_template: "{{ value_json.status }}"
     scan_interval: 30
 
 template:
   - sensor:
       - name: "NAS Status"
         unique_id: nas_status_led
-        state: "{{ state_attr('sensor.servmgr_nas', 'power_state') }}"
+        state: "{{ state_attr('sensor.servmgr_nas', 'status') }}"
         icon: mdi:circle
-        # Grey = off, orange = on but degraded, green = all checks ok
+        # Grey = off, blue = turning on/off, orange = degraded, green = on
         icon_color: >
-          {% set ps = state_attr('sensor.servmgr_nas', 'power_state') %}
-          {% set health = state_attr('sensor.servmgr_nas', 'health') %}
-          {% if ps in ['off', 'pending_off', none] %}
-            grey
-          {% elif ps == 'on' and health == 'up' %}
+          {% set s = state_attr('sensor.servmgr_nas', 'status') %}
+          {% if s == 'on' %}
             green
-          {% else %}
+          {% elif s in ['turning_on', 'turning_off'] %}
+            blue
+          {% elif s == 'degraded' %}
             orange
+          {% else %}
+            grey
           {% endif %}
 
       - name: "NAS Counter"
@@ -264,7 +264,7 @@ cards:
           service: rest_command.nas_poweroff
 ```
 
-The status LED icon color tracks three states: **grey** when the server is off or shutting down, **orange** when the server is on but at least one health probe is failing, **green** when the server is on and all health checks pass.
+The status LED icon color tracks four states: **grey** when the server is off, **blue** during a power transition (turning on or off), **orange** when the server is degraded (checks inconsistent with expected state), **green** when the server is fully on and all health checks pass.
 
 ## Reference Counter
 

@@ -31,6 +31,7 @@ pub struct HealthCheckConfig {
     pub check_type: HealthCheckType,
     pub url: Option<String>,
     pub port: Option<u16>,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +205,8 @@ pub struct CheckResult {
     pub latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

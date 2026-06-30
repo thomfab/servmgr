@@ -14,7 +14,7 @@ interface ServerEntry {
 	ipmi_user?: string;
 	ipmi_password?: string;
 	depends_on?: string[];
-	health_checks: { type: string; url?: string; port?: number }[];
+	health_checks: { type: string; url?: string; port?: number; label?: string }[];
 	check_interval_secs?: number;
 	power_on_timeout_secs?: number;
 }
@@ -50,6 +50,7 @@ export function serversToYaml(entries: ServerEntry[]): string {
 				yaml += `      - type: ${check.type}\n`;
 				if (check.url) yaml += `        url: "${check.url}"\n`;
 				if (check.port) yaml += `        port: ${check.port}\n`;
+				if (check.label) yaml += `        label: "${check.label}"\n`;
 			}
 		}
 		if (s.check_interval_secs && s.check_interval_secs !== 30) {

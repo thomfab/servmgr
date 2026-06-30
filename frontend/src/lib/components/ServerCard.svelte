@@ -154,12 +154,12 @@
 	{/if}
 
 	<div class="checks">
-		{#each server.checks as check}
+		{#each [...server.checks].sort((a, b) => { const la = a.label ?? (a.port ? `${a.type}:${a.port}` : a.type); const lb = b.label ?? (b.port ? `${b.type}:${b.port}` : b.type); return la.localeCompare(lb); }) as check}
 			<div class="check">
 				<span class="check-icon" style="color: {check.ok ? 'var(--color-green)' : 'var(--color-red)'}">
 					{check.ok ? '●' : '○'}
 				</span>
-				<span class="check-type">{check.type}{check.port ? `:${check.port}` : ''}</span>
+				<span class="check-type">{check.label ?? (check.port ? `${check.type}:${check.port}` : check.type)}</span>
 			</div>
 		{/each}
 	</div>

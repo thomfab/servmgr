@@ -20,7 +20,7 @@
 		ipmi_user?: string;
 		ipmi_password?: string;
 		depends_on?: string[];
-		health_checks: { type: string; url?: string; port?: number }[];
+		health_checks: { type: string; url?: string; port?: number; label?: string }[];
 		check_interval_secs?: number;
 		power_on_timeout_secs?: number;
 	}
@@ -41,7 +41,7 @@
 		ipmi_user: string;
 		ipmi_password: string;
 		depends_on: string;
-		health_checks: { type: string; url?: string; port?: number }[];
+		health_checks: { type: string; url?: string; port?: number; label?: string }[];
 		check_interval_secs: number;
 		power_on_timeout_secs: number;
 	}
@@ -191,7 +191,7 @@
 			</div>
 		{:else}
 			<div class="server-list">
-				{#each servers as server (server.id)}
+				{#each [...servers].sort((a, b) => a.id.localeCompare(b.id)) as server (server.id)}
 					<div class="server-row">
 						<div class="server-info">
 							<span class="server-name">{server.name}</span>

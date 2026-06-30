@@ -6,6 +6,7 @@ export interface CheckResult {
 	ok: boolean;
 	latency_ms: number | null;
 	port?: number;
+	label?: string;
 }
 
 export interface ServerState {

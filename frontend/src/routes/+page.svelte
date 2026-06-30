@@ -8,9 +8,13 @@
 	let servers = $state<ServerState[]>([]);
 	let eventSource: EventSource | null = null;
 
+	function sortById(arr: ServerState[]): ServerState[] {
+		return [...arr].sort((a, b) => a.id.localeCompare(b.id));
+	}
+
 	onMount(() => {
 		eventSource = connectSSE({
-			onFullState(s) { servers = s; },
+			onFullState(s) { servers = sortById(s); },
 			onUpdate(s) {
 				servers = servers.map(srv => srv.id === s.id ? s : srv);
 			},

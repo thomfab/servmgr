@@ -3,6 +3,7 @@
 		type: string;
 		url?: string;
 		port?: number;
+		label?: string;
 	}
 
 	interface ServerFormData {
@@ -205,6 +206,9 @@
 				{#if check.type === 'tcp'}
 					<input type="number" bind:value={check.port} placeholder="Port" min="1" max="65535" class="check-input-sm" />
 				{/if}
+				{#if check.type === 'http' || check.type === 'tcp'}
+					<input type="text" bind:value={check.label} placeholder="Label (optional)" class="check-label-input" />
+				{/if}
 				<button type="button" class="btn-remove" onclick={() => removeCheck(i)}>×</button>
 			</div>
 		{/each}
@@ -334,6 +338,9 @@
 	}
 	.check-input-sm {
 		width: 100px;
+	}
+	.check-label-input {
+		width: 130px;
 	}
 	.btn-remove {
 		background: var(--color-red);

@@ -39,13 +39,15 @@ async fn run_check(
     hostname: &str,
     server: &ServerConfig,
 ) -> CheckResult {
-    match check.check_type {
+    let mut result = match check.check_type {
         HealthCheckType::Ping => run_ping(hostname).await,
         HealthCheckType::Http => run_http(check.url.as_deref().unwrap_or("")).await,
         HealthCheckType::Tcp => run_tcp(hostname, check.port.unwrap_or(80)).await,
         HealthCheckType::Ssh => run_tcp(hostname, 22).await,
         HealthCheckType::IpmiPower => run_ipmi_power(server).await,
-    }
+    };
+    result.label = check.label.clone();
+    result
 }
 
 async fn run_ping(hostname: &str) -> CheckResult {
@@ -75,6 +77,7 @@ async fn run_ping(hostname: &str) -> CheckResult {
         ok,
         latency_ms: Some(latency),
         port: None,
+        label: None,
     }
 }
 
@@ -110,6 +113,7 @@ async fn run_http(url: &str) -> CheckResult {
         ok,
         latency_ms: Some(latency),
         port: None,
+        label: None,
     }
 }
 
@@ -135,6 +139,7 @@ async fn run_tcp(hostname: &str, port: u16) -> CheckResult {
         ok,
         latency_ms: Some(latency),
         port: Some(port),
+        label: None,
     }
 }
 
@@ -172,5 +177,6 @@ async fn run_ipmi_power(server: &ServerConfig) -> CheckResult {
         ok,
         latency_ms: Some(latency),
         port: None,
+        label: None,
     }
 }

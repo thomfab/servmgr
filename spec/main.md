@@ -151,10 +151,9 @@ PUT /api/servers/nas/counter
   "id": "nas",
   "name": "NAS",
   "hostname": "nas.local",
-  "power_state": "on",
   "counter": 2,
   "callers": ["ha-bedroom-scene", "ha-movie-mode"],
-  "status": "up",
+  "status": "on",
   "checks": [
     { "type": "ping", "ok": true, "latency_ms": 2 },
     { "type": "http", "ok": true, "latency_ms": 45 },
@@ -243,10 +242,17 @@ One `tokio` task per server, running on `check_interval_secs`. All results writt
 | `ssh` | TCP connect to port 22 |
 | `ipmi_power` | Shell: `ipmitool chassis power status` |
 
-**Overall server status:**
+**Internal health status** (used by the engine, not exposed in API):
 - `up` — all checks pass
 - `degraded` — some checks pass
 - `down` — all checks fail
+
+**Display status** (exposed in API `status` field):
+- `on` — counter > 0 and all checks pass
+- `off` — counter = 0 and all checks fail
+- `turning_on` — counter > 0 but checks not yet passing (pending_on state)
+- `turning_off` — counter = 0 but checks still passing (pending_off state)
+- `degraded` — checks inconsistent with expected state
 
 ---
 
@@ -256,7 +262,7 @@ On connection (or reconnection), the server immediately pushes the full current 
 
 ```
 event: full_state
-data: [{"id": "nas", "status": "up", ...}, {"id": "homeserver", "status": "down", ...}]
+data: [{"id": "nas", "status": "on", ...}, {"id": "homeserver", "status": "off", ...}]
 
 event: update
 data: {"id": "nas", "status": "degraded", ...}

@@ -22,9 +22,9 @@ erDiagram
     STATUS_HISTORY {
         int id PK "Auto-increment"
         text server_id FK "References server_state.id"
-        text status "up|degraded|down"
-        text power_state "Power state at time of record"
+        text status "off|on|turning_on|turning_off|degraded"
         text checks "JSON array of check results"
+        int counter "Reference count at time of record"
         text timestamp "ISO 8601 timestamp"
     }
 
@@ -56,9 +56,9 @@ Append-only log of state transitions for the history timeline.
 |--------|------|-------------|
 | id | INTEGER PK | Auto-increment |
 | server_id | TEXT FK | References server_state.id |
-| status | TEXT | Health status at this point |
-| power_state | TEXT | Power state at this point |
+| status | TEXT | Display status: `off`, `on`, `turning_on`, `turning_off`, `degraded` |
 | checks | TEXT | JSON check results at this point |
+| counter | INTEGER | Reference count at this point (0 = off) |
 | timestamp | TEXT | ISO 8601 timestamp |
 
 **Index**: `idx_history_server_time` on `(server_id, timestamp)` for efficient range queries.

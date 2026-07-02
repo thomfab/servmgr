@@ -96,14 +96,23 @@
 		const first = new Date(entries[0].timestamp).getTime();
 		const total = now - first;
 		if (total === 0) return [];
-		return entries.map((e, i) => {
-			const from = new Date(e.timestamp).getTime();
-			const to = i + 1 < entries.length ? new Date(entries[i + 1].timestamp).getTime() : now;
+
+		// Merge consecutive same-status entries so the bar proportions are correct
+		// regardless of how many polling ticks exist in a range.
+		const merged: { status: string; from: number; time: string }[] = [];
+		for (const e of entries) {
+			if (merged.length === 0 || e.status !== merged[merged.length - 1].status) {
+				merged.push({ status: e.status, from: new Date(e.timestamp).getTime(), time: fmtTime(e.timestamp) });
+			}
+		}
+
+		return merged.map((m, i) => {
+			const to = i + 1 < merged.length ? merged[i + 1].from : now;
 			return {
-				flex: (to - from) / total,
-				color: segmentColor(e.status),
-				status: e.status,
-				time: fmtTime(e.timestamp)
+				flex: (to - m.from) / total,
+				color: segmentColor(m.status),
+				status: m.status,
+				time: m.time
 			};
 		});
 	}
@@ -634,7 +643,6 @@
 		background: var(--color-border);
 	}
 	.seg {
-		min-width: 2px;
 		cursor: crosshair;
 		transition: filter 0.1s;
 	}

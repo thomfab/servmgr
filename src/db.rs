@@ -36,8 +36,8 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             server_id TEXT NOT NULL,
             status TEXT NOT NULL,
-            power_state TEXT NOT NULL,
             checks TEXT NOT NULL DEFAULT '[]',
+            counter INTEGER DEFAULT 0,
             timestamp TEXT NOT NULL,
             FOREIGN KEY (server_id) REFERENCES server_state(id)
         )",
@@ -70,8 +70,13 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Add counter column to status_history if it doesn't exist (migration for existing DBs)
-    let _ = sqlx::query("ALTER TABLE status_history ADD COLUMN counter INTEGER NOT NULL DEFAULT 0")
+    // Migration: add counter column for existing DBs (SQLite < 3.37: no NOT NULL without default).
+    let _ = sqlx::query("ALTER TABLE status_history ADD COLUMN counter INTEGER DEFAULT 0")
+        .execute(pool)
+        .await;
+
+    // Migration: drop power_state column (SQLite 3.35+ only; silently ignored on older versions).
+    let _ = sqlx::query("ALTER TABLE status_history DROP COLUMN power_state")
         .execute(pool)
         .await;
 
@@ -213,13 +218,13 @@ pub async fn update_health_status(
     .await?;
 
     sqlx::query(
-        "INSERT INTO status_history (server_id, status, power_state, checks, counter, timestamp) SELECT id, ?, power_state, ?, ?, ? FROM server_state WHERE id = ?",
+        "INSERT INTO status_history (server_id, status, checks, counter, timestamp) VALUES (?, ?, ?, ?, ?)",
     )
+    .bind(server_id)
     .bind(display_status)
     .bind(&checks_json)
     .bind(counter)
     .bind(&timestamp)
-    .bind(server_id)
     .execute(pool)
     .await?;
 
@@ -320,7 +325,7 @@ pub async fn get_history(
     let to_str = to.unwrap_or_else(Utc::now).to_rfc3339();
 
     let rows = sqlx::query(
-        "SELECT server_id, status, checks, counter, timestamp FROM status_history WHERE server_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+        "SELECT server_id, status, checks, COALESCE(counter, 0) AS counter, timestamp FROM status_history WHERE server_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
     )
     .bind(server_id)
     .bind(&from_str)

@@ -139,6 +139,14 @@
 	let counterMax = $derived(Math.max(1, ...historyEntries.map(e => e.counter)));
 	let rangeStartLabel = $derived(historyEntries.length > 0 ? fmtTimeShort(historyEntries[0].timestamp) : '');
 
+	// Status changes: entries where status differs from the previous one, newest first
+	let statusChanges = $derived(
+		historyEntries
+			.filter((e, i) => i === 0 || e.status !== historyEntries[i - 1].status)
+			.slice()
+			.reverse()
+	);
+
 	// Hover tooltips
 	let tooltip = $state<{ x: number; y: number; label: string; time: string } | null>(null);
 	let counterHover = $state<{ pct: number; cy: number } | null>(null);
@@ -324,6 +332,19 @@
 								<span>0</span>
 							</div>
 						</div>
+
+						{#if statusChanges.length > 0}
+							<div class="status-changes-label">Status changes</div>
+							<div class="status-changes">
+								{#each statusChanges as entry}
+									<div class="status-change-row">
+										<span class="sc-dot" style="background: {segmentColor(entry.status)}"></span>
+										<span class="sc-label">{statusLabel(entry.status)}</span>
+										<span class="sc-time">{fmtTime(entry.timestamp)}</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -673,6 +694,41 @@
 		color: var(--color-text-muted);
 		font-variant-numeric: tabular-nums;
 		padding: 1px 0;
+	}
+
+	.status-changes-label {
+		font-size: 0.7rem;
+		color: var(--color-text-muted);
+		margin-top: 0.75rem;
+	}
+	.status-changes {
+		max-height: 140px;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		margin-top: 0.25rem;
+	}
+	.status-change-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.78rem;
+	}
+	.sc-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+	.sc-label {
+		min-width: 80px;
+		font-weight: 500;
+	}
+	.sc-time {
+		color: var(--color-text-muted);
+		font-size: 0.72rem;
+		font-variant-numeric: tabular-nums;
 	}
 
 	/* Hover tooltip */

@@ -57,6 +57,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             server_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             command TEXT NOT NULL,
+            caller TEXT NOT NULL DEFAULT '',
             success INTEGER NOT NULL DEFAULT 1,
             message TEXT NOT NULL DEFAULT ''
         )",
@@ -77,6 +78,11 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
     // Migration: drop power_state column (SQLite 3.35+ only; silently ignored on older versions).
     let _ = sqlx::query("ALTER TABLE status_history DROP COLUMN power_state")
+        .execute(pool)
+        .await;
+
+    // Migration: add caller column to power_log for existing DBs.
+    let _ = sqlx::query("ALTER TABLE power_log ADD COLUMN caller TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
 
@@ -250,6 +256,7 @@ pub struct PowerLogEntry {
     pub server_id: String,
     pub timestamp: DateTime<Utc>,
     pub command: String,
+    pub caller: String,
     pub success: bool,
     pub message: String,
 }
@@ -258,16 +265,18 @@ pub async fn insert_power_log(
     pool: &SqlitePool,
     server_id: &str,
     command: &str,
+    caller: &str,
     success: bool,
     message: &str,
 ) -> Result<(), sqlx::Error> {
     let timestamp = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO power_log (server_id, timestamp, command, success, message) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO power_log (server_id, timestamp, command, caller, success, message) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(server_id)
     .bind(&timestamp)
     .bind(command)
+    .bind(caller)
     .bind(success as i32)
     .bind(message)
     .execute(pool)
@@ -281,7 +290,7 @@ pub async fn get_power_log(
     limit: i64,
 ) -> Result<Vec<PowerLogEntry>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, server_id, timestamp, command, success, message FROM power_log WHERE server_id = ? ORDER BY timestamp DESC LIMIT ?",
+        "SELECT id, server_id, timestamp, command, caller, success, message FROM power_log WHERE server_id = ? ORDER BY timestamp DESC LIMIT ?",
     )
     .bind(server_id)
     .bind(limit)
@@ -298,6 +307,7 @@ pub async fn get_power_log(
                 .parse()
                 .unwrap_or_else(|_| Utc::now()),
             command: row.get("command"),
+            caller: row.get("caller"),
             success: row.get::<i32, _>("success") != 0,
             message: row.get("message"),
         })

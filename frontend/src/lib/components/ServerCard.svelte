@@ -341,10 +341,6 @@
 									/>
 								{/if}
 							</svg>
-							<div class="counter-y-labels">
-								<span>{counterMax}</span>
-								<span>0</span>
-							</div>
 						</div>
 						<div class="bar-axis">
 							<span>{rangeStartLabel}</span>
@@ -706,16 +702,6 @@
 		background: var(--color-bg);
 		cursor: crosshair;
 	}
-	.counter-y-labels {
-		display: flex;
-		flex-direction: column;
-		justify-content: space-between;
-		font-size: 0.65rem;
-		color: var(--color-text-muted);
-		font-variant-numeric: tabular-nums;
-		padding: 1px 0;
-	}
-
 	.status-changes-label {
 		font-size: 0.7rem;
 		color: var(--color-text-muted);

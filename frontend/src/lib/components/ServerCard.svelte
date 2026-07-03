@@ -27,6 +27,7 @@
 	let historyRange = $state<'2h' | 'day' | 'week'>('day');
 	let historyEntries = $state<HistoryEntry[]>([]);
 	let historyLoading = $state(false);
+	let rangeStart = $state<number>(0);
 
 	async function openHistory() {
 		showHistory = true;
@@ -36,7 +37,9 @@
 	async function loadHistory() {
 		historyLoading = true;
 		const msMap = { '2h': 2 * 3600_000, 'day': 86400_000, 'week': 7 * 86400_000 };
-		const from = new Date(Date.now() - msMap[historyRange]).toISOString();
+		const now = Date.now();
+		rangeStart = now - msMap[historyRange];
+		const from = new Date(rangeStart).toISOString();
 		historyEntries = await getHistory(server.id, from);
 		historyLoading = false;
 	}
@@ -71,10 +74,11 @@
 			case 'on':  return 'var(--color-green)';
 			case 'turning_on': case 'turning_off': return 'var(--color-blue)';
 			case 'degraded': return 'var(--color-orange)';
-			case 'off': return '#3a3a3a';
+			case 'off': return '#606060';
+			case 'no_data': return '#222';
 			// legacy history values
 			case 'up': return 'var(--color-green)';
-			case 'down': return '#3a3a3a';
+			case 'down': return '#606060';
 			default: return 'var(--color-red)';
 		}
 	}
@@ -83,23 +87,29 @@
 		const map: Record<string, string> = {
 			on: 'On', off: 'Off',
 			turning_on: 'Turning On', turning_off: 'Turning Off',
-			degraded: 'Degraded', up: 'On', down: 'Off'
+			degraded: 'Degraded', no_data: 'No data', up: 'On', down: 'Off'
 		};
 		return map[s] ?? s;
 	}
 
 	type Segment = { flex: number; color: string; status: string; time: string };
 
-	function computeSegments(entries: HistoryEntry[]): Segment[] {
-		if (entries.length === 0) return [];
+	function computeSegments(entries: HistoryEntry[], start: number): Segment[] {
 		const now = Date.now();
-		const first = new Date(entries[0].timestamp).getTime();
-		const total = now - first;
+		const total = now - start;
 		if (total === 0) return [];
 
-		// Merge consecutive same-status entries so the bar proportions are correct
-		// regardless of how many polling ticks exist in a range.
+		if (entries.length === 0) {
+			return [{ flex: 1, color: segmentColor('no_data'), status: 'no_data', time: '' }];
+		}
+
+		// Merge consecutive same-status entries; prepend a no_data gap if history
+		// starts after the range boundary.
 		const merged: { status: string; from: number; time: string }[] = [];
+		const firstTime = new Date(entries[0].timestamp).getTime();
+		if (firstTime > start) {
+			merged.push({ status: 'no_data', from: start, time: '' });
+		}
 		for (const e of entries) {
 			if (merged.length === 0 || e.status !== merged[merged.length - 1].status) {
 				merged.push({ status: e.status, from: new Date(e.timestamp).getTime(), time: fmtTime(e.timestamp) });
@@ -119,18 +129,17 @@
 
 	type CounterPoint = { x: number; y: number };
 
-	function computeCounterPoints(entries: HistoryEntry[]): CounterPoint[] {
+	function computeCounterPoints(entries: HistoryEntry[], start: number): CounterPoint[] {
 		if (entries.length === 0) return [];
 		const now = Date.now();
-		const first = new Date(entries[0].timestamp).getTime();
-		const total = now - first;
+		const total = now - start;
 		if (total === 0) return [];
 		const pts: CounterPoint[] = [];
 		for (let i = 0; i < entries.length; i++) {
-			const t = (new Date(entries[i].timestamp).getTime() - first) / total * 100;
+			const t = (new Date(entries[i].timestamp).getTime() - start) / total * 100;
 			pts.push({ x: t, y: entries[i].counter });
 			if (i + 1 < entries.length) {
-				const t2 = (new Date(entries[i + 1].timestamp).getTime() - first) / total * 100;
+				const t2 = (new Date(entries[i + 1].timestamp).getTime() - start) / total * 100;
 				pts.push({ x: t2, y: entries[i].counter });
 			}
 		}
@@ -143,10 +152,10 @@
 		return pts.map(p => `${p.x},${h - (p.y / maxY) * h}`).join(' ');
 	}
 
-	let segments = $derived(computeSegments(historyEntries));
-	let counterPoints = $derived(computeCounterPoints(historyEntries));
+	let segments = $derived(computeSegments(historyEntries, rangeStart));
+	let counterPoints = $derived(computeCounterPoints(historyEntries, rangeStart));
 	let counterMax = $derived(Math.max(1, ...historyEntries.map(e => e.counter)));
-	let rangeStartLabel = $derived(historyEntries.length > 0 ? fmtTimeShort(historyEntries[0].timestamp) : '');
+	let rangeStartLabel = $derived(rangeStart > 0 ? fmtTimeShort(new Date(rangeStart).toISOString()) : '');
 
 	// Status changes: entries where status differs from the previous one, newest first
 	let statusChanges = $derived(
@@ -161,6 +170,7 @@
 	let counterHover = $state<{ pct: number; cy: number } | null>(null);
 
 	function showSegTooltip(e: MouseEvent, seg: Segment) {
+		if (seg.status === 'no_data') { hideTooltip(); return; }
 		tooltip = { x: e.clientX, y: e.clientY, label: statusLabel(seg.status), time: seg.time };
 	}
 
@@ -171,9 +181,8 @@
 
 	function entryAtPct(pct: number): HistoryEntry {
 		const now = Date.now();
-		const first = new Date(historyEntries[0].timestamp).getTime();
-		const total = now - first;
-		const targetTime = first + pct * total;
+		const total = now - rangeStart;
+		const targetTime = rangeStart + pct * total;
 		let best = historyEntries[0];
 		for (const entry of historyEntries) {
 			if (new Date(entry.timestamp).getTime() <= targetTime) best = entry;
@@ -290,18 +299,14 @@
 								></div>
 							{/each}
 						</div>
-						<div class="bar-axis">
-							<span>{rangeStartLabel}</span>
-							<span>now</span>
-						</div>
 						<div class="bar-legend">
 							<span class="legend-item"><span class="legend-dot" style="background: var(--color-green)"></span>on</span>
 							<span class="legend-item"><span class="legend-dot" style="background: var(--color-blue)"></span>turning</span>
 							<span class="legend-item"><span class="legend-dot" style="background: var(--color-orange)"></span>degraded</span>
-							<span class="legend-item"><span class="legend-dot" style="background: #3a3a3a"></span>off</span>
+							<span class="legend-item"><span class="legend-dot" style="background: #606060"></span>off</span>
+							<span class="legend-item"><span class="legend-dot" style="background: #222; border: 1px solid #444"></span>no data</span>
 						</div>
 
-						<div class="counter-chart-label">Counter</div>
 						<div class="counter-chart">
 							<svg
 								viewBox="0 0 100 40"
@@ -341,6 +346,10 @@
 								<span>0</span>
 							</div>
 						</div>
+						<div class="bar-axis">
+							<span>{rangeStartLabel}</span>
+							<span>now</span>
+						</div>
 
 						{#if statusChanges.length > 0}
 							<div class="status-changes-label">Status changes</div>
@@ -377,10 +386,18 @@
 				{:else}
 					<div class="log-list">
 						{#each logEntries as entry}
+							{@const cmdLabel = ({
+								counter_inc: '+1', counter_dec: '−1',
+								force_on: 'Force On', force_off: 'Force Off',
+								wol: 'WoL', ipmi_on: 'IPMI On', ipmi_off: 'IPMI Off', ssh_off: 'SSH Off'
+							} as Record<string,string>)[entry.command] ?? entry.command}
 							<div class="log-entry" class:log-fail={!entry.success}>
 								<div class="log-header">
 									<span class="log-icon">{entry.success ? '✓' : '✗'}</span>
-									<span class="log-cmd">{entry.command}</span>
+									<span class="log-cmd">{cmdLabel}</span>
+									{#if entry.caller}
+										<span class="log-caller">{entry.caller}</span>
+									{/if}
 									<span class="log-time">{fmtTime(entry.timestamp)}</span>
 								</div>
 								{#if entry.message}
@@ -675,11 +692,6 @@
 		flex-shrink: 0;
 	}
 
-	.counter-chart-label {
-		font-size: 0.7rem;
-		color: var(--color-text-muted);
-		margin-top: 0.5rem;
-	}
 	.counter-chart {
 		display: flex;
 		align-items: stretch;
@@ -783,6 +795,13 @@
 	.log-icon { font-size: 0.85rem; color: var(--color-green); }
 	.log-entry.log-fail .log-icon { color: var(--color-red); }
 	.log-cmd { font-weight: 600; color: var(--color-text); }
+	.log-caller {
+		font-size: 0.72rem;
+		background: rgba(59, 130, 246, 0.15);
+		color: var(--color-blue);
+		padding: 0.1rem 0.35rem;
+		border-radius: 3px;
+	}
 	.log-time { color: var(--color-text-muted); font-variant-numeric: tabular-nums; margin-left: auto; }
 	.log-output {
 		margin: 0;

@@ -9,12 +9,12 @@ pub async fn power_on(server: &ServerConfig, pool: &SqlitePool, server_id: &str)
     match server.power_on {
         PowerOnMethod::Wol => {
             let (result, output) = send_wol(server.mac.as_deref().unwrap_or(""), server.wol_broadcast.as_deref());
-            db::insert_power_log(pool, server_id, "wol", result.is_ok(), &output).await.ok();
+            db::insert_power_log(pool, server_id, "wol", "", result.is_ok(), &output).await.ok();
             result
         }
         PowerOnMethod::Ipmi => {
             let (result, output) = ipmi_power_on(server).await;
-            db::insert_power_log(pool, server_id, "ipmi_on", result.is_ok(), &output).await.ok();
+            db::insert_power_log(pool, server_id, "ipmi_on", "", result.is_ok(), &output).await.ok();
             result
         }
     }
@@ -24,12 +24,12 @@ pub async fn power_off(server: &ServerConfig, pool: &SqlitePool, server_id: &str
     match server.power_off {
         PowerOffMethod::Ssh => {
             let (result, output) = ssh_shutdown(server).await;
-            db::insert_power_log(pool, server_id, "ssh_off", result.is_ok(), &output).await.ok();
+            db::insert_power_log(pool, server_id, "ssh_off", "", result.is_ok(), &output).await.ok();
             result
         }
         PowerOffMethod::Ipmi => {
             let (result, output) = ipmi_power_off(server).await;
-            db::insert_power_log(pool, server_id, "ipmi_off", result.is_ok(), &output).await.ok();
+            db::insert_power_log(pool, server_id, "ipmi_off", "", result.is_ok(), &output).await.ok();
             result
         }
     }

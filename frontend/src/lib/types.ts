@@ -36,6 +36,7 @@ export interface PowerLogEntry {
 	server_id: string;
 	timestamp: string;
 	command: string;
+	caller: string;
 	success: boolean;
 	message: string;
 }

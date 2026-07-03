@@ -226,6 +226,7 @@ impl AppState {
         db::update_counter_and_callers(&self.pool, server_id, new_counter, &new_callers)
             .await
             .map_err(|e| e.to_string())?;
+        db::insert_power_log(&self.pool, server_id, "counter_inc", caller, true, &format!("{new_counter}")).await.ok();
 
         if row.counter == 0 {
             db::update_power_state(&self.pool, server_id, PowerState::PendingOn)
@@ -365,6 +366,7 @@ impl AppState {
         db::update_counter_and_callers(&self.pool, server_id, new_counter, &new_callers)
             .await
             .map_err(|e| e.to_string())?;
+        db::insert_power_log(&self.pool, server_id, "counter_dec", caller, true, &format!("{new_counter}")).await.ok();
 
         // Every decrement propagates to dependencies
         let dep_caller = format!("dep:{server_id}:{caller}");
@@ -458,6 +460,7 @@ impl AppState {
             .clone();
         drop(config);
 
+        db::insert_power_log(&self.pool, server_id, "force_on", "", true, "").await.ok();
         power::power_on(&server, &self.pool, server_id).await?;
 
         self.get_server_state(server_id)
@@ -474,6 +477,8 @@ impl AppState {
             .ok_or_else(|| format!("Server not found: {server_id}"))?
             .clone();
         drop(config);
+
+        db::insert_power_log(&self.pool, server_id, "force_off", "", true, "").await.ok();
 
         // Cancel any in-flight power sequence
         {

@@ -2,9 +2,8 @@
 	import type { ServerState, HistoryEntry, PowerLogEntry } from '$lib/types';
 	import { forcePowerOn, forcePowerOff, getHistory, getPowerLog } from '$lib/api';
 
-	let { server, canDecrement = true, onPowerOn, onPowerOff }: {
+	let { server, onPowerOn, onPowerOff }: {
 		server: ServerState;
-		canDecrement?: boolean;
 		onPowerOn: () => void;
 		onPowerOff: () => void;
 	} = $props();
@@ -253,7 +252,7 @@
 		<div class="actions">
 			<div class="main-actions">
 				<button class="btn-counter-up" onclick={onPowerOn} disabled={hasError}>+1</button>
-				<button class="btn-counter-down" onclick={onPowerOff} disabled={hasError || !canDecrement}>-1</button>
+				<button class="btn-counter-down" onclick={onPowerOff} disabled={hasError}>-1</button>
 			</div>
 			<div class="force-actions">
 				<button class="btn-force" onclick={handleForceOn} disabled={hasError}>Force On</button>

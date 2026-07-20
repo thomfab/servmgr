@@ -29,14 +29,9 @@
 	});
 
 	let callCounter = 0;
-	// Tracks which caller this UI session used for each server's last +1.
-	// Needed so -1 works immediately after +1 without waiting for the SSE update,
-	// and so -1 is disabled when the server was never incremented from this session.
-	let sessionCallers = $state<Record<string, string>>({});
-
-	function canDecrement(server: ServerState): boolean {
-		return !!sessionCallers[server.id] || server.callers.some(c => c.startsWith('webui-'));
-	}
+	// Tracks the caller used for each server's last +1 in this session.
+	// Allows -1 to work immediately after +1 without waiting for the SSE update.
+	let sessionCallers: Record<string, string> = {};
 
 	async function handlePowerOn(id: string) {
 		callCounter++;
@@ -66,7 +61,6 @@
 			{#each servers as server (server.id)}
 				<ServerCard
 					{server}
-					canDecrement={canDecrement(server)}
 					onPowerOn={() => handlePowerOn(server.id)}
 					onPowerOff={() => handlePowerOff(server.id)}
 				/>

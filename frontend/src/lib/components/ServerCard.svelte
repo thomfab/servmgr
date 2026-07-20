@@ -2,8 +2,9 @@
 	import type { ServerState, HistoryEntry, PowerLogEntry } from '$lib/types';
 	import { forcePowerOn, forcePowerOff, getHistory, getPowerLog } from '$lib/api';
 
-	let { server, onPowerOn, onPowerOff }: {
+	let { server, canDecrement = true, onPowerOn, onPowerOff }: {
 		server: ServerState;
+		canDecrement?: boolean;
 		onPowerOn: () => void;
 		onPowerOff: () => void;
 	} = $props();
@@ -21,6 +22,8 @@
 
 	let badge = $derived(statusBadge(server));
 	let hasError = $derived(!!server.config_error);
+	// dep: callers are managed by server dependencies and not counted as user claims
+	let userCounter = $derived(server.callers.filter(c => !c.startsWith('dep:')).length);
 
 	// History popup
 	let showHistory = $state(false);
@@ -245,12 +248,12 @@
 
 	<div class="footer">
 		<div class="counter-display" title="Reference counter">
-			{server.counter}
+			{userCounter}
 		</div>
 		<div class="actions">
 			<div class="main-actions">
 				<button class="btn-counter-up" onclick={onPowerOn} disabled={hasError}>+1</button>
-				<button class="btn-counter-down" onclick={onPowerOff} disabled={hasError}>-1</button>
+				<button class="btn-counter-down" onclick={onPowerOff} disabled={hasError || !canDecrement}>-1</button>
 			</div>
 			<div class="force-actions">
 				<button class="btn-force" onclick={handleForceOn} disabled={hasError}>Force On</button>

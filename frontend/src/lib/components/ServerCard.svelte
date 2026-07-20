@@ -22,6 +22,8 @@
 
 	let badge = $derived(statusBadge(server));
 	let hasError = $derived(!!server.config_error);
+	// dep: callers are managed by server dependencies and not counted as user claims
+	let userCounter = $derived(server.callers.filter(c => !c.startsWith('dep:')).length);
 
 	// History popup
 	let showHistory = $state(false);
@@ -246,7 +248,7 @@
 
 	<div class="footer">
 		<div class="counter-display" title="Reference counter">
-			{server.counter}
+			{userCounter}
 		</div>
 		<div class="actions">
 			<div class="main-actions">

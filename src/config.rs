@@ -159,6 +159,7 @@ mod tests {
             hostname: format!("{id}.local"),
             power_on: PowerOnMethod::Wol,
             mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
+            wol_broadcast: None,
             power_off: PowerOffMethod::Ssh,
             ssh_user: Some("user".to_string()),
             ssh_key_path: Some("/key".to_string()),
@@ -170,7 +171,7 @@ mod tests {
             depends_on: deps.into_iter().map(String::from).collect(),
             health_checks: vec![],
             check_interval_secs: 30,
-            power_on_timeout_secs: 300,
+            power_timeout_secs: 300,
         }
     }
 

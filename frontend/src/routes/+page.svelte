@@ -28,29 +28,19 @@
 		eventSource?.close();
 	});
 
+	// The backend no longer requires a matching caller to decrement — every
+	// +1/-1 just moves the counter, floored at 0. The caller string here is
+	// purely for the audit/power log.
 	let callCounter = 0;
-	// Tracks which caller this UI session used for each server's last +1.
-	// Needed so -1 works immediately after +1 without waiting for the SSE update,
-	// and so -1 is disabled when the server was never incremented from this session.
-	let sessionCallers = $state<Record<string, string>>({});
-
-	function canDecrement(server: ServerState): boolean {
-		return !!sessionCallers[server.id] || server.callers.some(c => c.startsWith('webui-'));
-	}
 
 	async function handlePowerOn(id: string) {
 		callCounter++;
-		const caller = `webui-${callCounter}`;
-		sessionCallers[id] = caller;
-		await powerOn(id, caller);
+		await powerOn(id, `webui-${callCounter}`);
 	}
 
 	async function handlePowerOff(id: string) {
-		const caller = sessionCallers[id]
-			?? servers.find(s => s.id === id)?.callers.filter(c => c.startsWith('webui-')).at(-1);
-		if (!caller) return;
-		await powerOff(id, caller);
-		delete sessionCallers[id];
+		callCounter++;
+		await powerOff(id, `webui-${callCounter}`);
 	}
 </script>
 
@@ -66,7 +56,6 @@
 			{#each servers as server (server.id)}
 				<ServerCard
 					{server}
-					canDecrement={canDecrement(server)}
 					onPowerOn={() => handlePowerOn(server.id)}
 					onPowerOff={() => handlePowerOff(server.id)}
 				/>

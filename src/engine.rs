@@ -173,27 +173,63 @@ impl AppState {
             return Err(err.clone());
         }
 
-        let server = config
-            .servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .ok_or_else(|| format!("Server not found: {server_id}"))?
-            .clone();
-
-        let deps = server.depends_on.clone();
+        if config.servers.iter().find(|s| s.id == server_id).is_none() {
+            return Err(format!("Server not found: {server_id}"));
+        }
         drop(config);
 
-        // Every increment propagates to dependencies with a unique caller
-        let dep_caller = format!("dep:{server_id}:{caller}");
-        for dep_id in &deps {
-            self.increment_and_start(dep_id, &dep_caller).await.ok();
-        }
-
         self.increment_and_start(server_id, caller).await?;
+
+        // Cascade the same +1 to every server this one transitively depends
+        // on, visiting each server at most once (guards against config
+        // cycles; diamond dependencies are fine since each is a distinct
+        // edge from a distinct visited source).
+        self.cascade_dependencies(server_id, caller, true).await;
 
         self.get_server_state(server_id)
             .await
             .ok_or_else(|| "State not found".to_string())
+    }
+
+    /// Walks the transitive `depends_on` graph starting at `server_id` and
+    /// applies the same +1/-1 to every dependency reached, breadth-first.
+    /// Each server is visited at most once per call so cyclic configs (which
+    /// are flagged elsewhere but not stripped from the graph) can't loop
+    /// forever.
+    async fn cascade_dependencies(self: &Arc<Self>, server_id: &str, caller: &str, increment: bool) {
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        visited.insert(server_id.to_string());
+
+        let mut queue: std::collections::VecDeque<(String, String)> = std::collections::VecDeque::new();
+        {
+            let config = self.config.read().await;
+            if let Some(server) = config.servers.iter().find(|s| s.id == server_id) {
+                let dep_caller = format!("dep:{server_id}:{caller}");
+                for dep_id in &server.depends_on {
+                    queue.push_back((dep_id.clone(), dep_caller.clone()));
+                }
+            }
+        }
+
+        while let Some((dep_id, dep_caller)) = queue.pop_front() {
+            if !visited.insert(dep_id.clone()) {
+                continue;
+            }
+
+            if increment {
+                self.increment_and_start(&dep_id, &dep_caller).await.ok();
+            } else {
+                self.decrement_and_stop(&dep_id, &dep_caller).await.ok();
+            }
+
+            let config = self.config.read().await;
+            if let Some(server) = config.servers.iter().find(|s| s.id == dep_id) {
+                let next_caller = format!("dep:{dep_id}:{dep_caller}");
+                for next_dep_id in &server.depends_on {
+                    queue.push_back((next_dep_id.clone(), next_caller.clone()));
+                }
+            }
+        }
     }
 
     async fn increment_and_start(
@@ -215,10 +251,7 @@ impl AppState {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Server state not found: {server_id}"))?;
 
-        if row.callers.contains(&caller.to_string()) {
-            return Ok(());
-        }
-
+        // No idempotency/ownership gating: every call is a plain +1.
         let new_counter = row.counter + 1;
         let mut new_callers = row.callers.clone();
         new_callers.push(caller.to_string());
@@ -325,56 +358,70 @@ impl AppState {
         caller: &str,
     ) -> Result<ServerState, String> {
         let config = self.config.read().await;
-        let server = config
-            .servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .ok_or_else(|| format!("Server not found: {server_id}"))?
-            .clone();
 
         if let Some(err) = config.cycle_errors.get(server_id) {
             return Err(err.clone());
         }
+
+        if config.servers.iter().find(|s| s.id == server_id).is_none() {
+            return Err(format!("Server not found: {server_id}"));
+        }
         drop(config);
 
-        self.decrement_and_stop(server_id, caller, &server).await?;
+        self.decrement_and_stop(server_id, caller).await?;
+
+        // Cascade the same -1 to every server this one transitively depends
+        // on. Symmetric with handle_power_on's cascade.
+        self.cascade_dependencies(server_id, caller, false).await;
 
         self.get_server_state(server_id)
             .await
             .ok_or_else(|| "State not found".to_string())
     }
 
+    /// Decrements `server_id`'s counter by 1, floored at 0. No caller
+    /// matching is required — any caller can always bring the counter down,
+    /// same as any caller can always bring it up. A counter already at 0 is
+    /// a no-op.
     async fn decrement_and_stop(
         self: &Arc<Self>,
         server_id: &str,
         caller: &str,
-        server: &ServerConfig,
     ) -> Result<(), String> {
+        let config = self.config.read().await;
+        let server = config
+            .servers
+            .iter()
+            .find(|s| s.id == server_id)
+            .ok_or_else(|| format!("Server not found: {server_id}"))?
+            .clone();
+        drop(config);
+
         let row = db::get_server_state(&self.pool, server_id)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Server state not found: {server_id}"))?;
 
-        if !row.callers.contains(&caller.to_string()) {
+        if row.counter == 0 {
             return Ok(());
         }
 
+        let new_counter = row.counter - 1;
         let mut new_callers = row.callers.clone();
-        new_callers.retain(|c| c != caller);
-        let new_counter = (row.counter - 1).max(0);
+        // Keep the callers list in sync with the counter for the audit/log
+        // view: drop a matching entry if there is one, otherwise the oldest.
+        if let Some(pos) = new_callers.iter().position(|c| c == caller) {
+            new_callers.remove(pos);
+        } else if !new_callers.is_empty() {
+            new_callers.remove(0);
+        }
 
         db::update_counter_and_callers(&self.pool, server_id, new_counter, &new_callers)
             .await
             .map_err(|e| e.to_string())?;
         db::insert_power_log(&self.pool, server_id, "counter_dec", caller, true, &format!("{new_counter}")).await.ok();
 
-        // Every decrement propagates to dependencies
-        let dep_caller = format!("dep:{server_id}:{caller}");
-        for dep_id in &server.depends_on {
-            self.decrement_dep(dep_id, &dep_caller).await;
-        }
-
-        if row.counter == 1 {
+        if new_counter == 0 {
             // Cancel in-flight power-on sequence before issuing shutdown
             {
                 let mut power_tasks = self.power_tasks.write().await;
@@ -406,48 +453,6 @@ impl AppState {
         }
 
         Ok(())
-    }
-
-    async fn decrement_dep(&self, dep_id: &str, caller: &str) {
-        let row = match db::get_server_state(&self.pool, dep_id).await {
-            Ok(Some(r)) => r,
-            _ => return,
-        };
-
-        if !row.callers.contains(&caller.to_string()) {
-            return;
-        }
-
-        let mut new_callers = row.callers.clone();
-        new_callers.retain(|c| c != caller);
-        let new_counter = (row.counter - 1).max(0);
-
-        db::update_counter_and_callers(&self.pool, dep_id, new_counter, &new_callers)
-            .await
-            .ok();
-
-        if row.counter == 1 {
-            db::update_power_state(&self.pool, dep_id, PowerState::PendingOff)
-                .await
-                .ok();
-            self.trigger_fast_check(dep_id).await;
-
-            let config = self.config.read().await;
-            if let Some(server) = config.servers.iter().find(|s| s.id == dep_id) {
-                let server_clone = server.clone();
-                let dep_id_owned = dep_id.to_string();
-                let pool_clone = self.pool.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = power::power_off(&server_clone, &pool_clone, &dep_id_owned).await {
-                        error!("Power off failed for dep {}: {e}", dep_id_owned);
-                    }
-                });
-            }
-        }
-
-        if let Some(state) = self.get_server_state(dep_id).await {
-            self.event_bus.send(SseEvent::Update(state));
-        }
     }
 
     pub async fn handle_force_power_on(self: &Arc<Self>, server_id: &str) -> Result<ServerState, String> {
@@ -594,5 +599,151 @@ impl AppState {
         // Re-initialize
         self.run_startup_reconciliation().await;
         self.start_health_checks().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{create_config_handle, validate_config};
+
+    fn make_server(id: &str, deps: Vec<&str>) -> ServerConfig {
+        ServerConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            hostname: format!("{id}.local"),
+            power_on: PowerOnMethod::Wol,
+            mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
+            wol_broadcast: None,
+            power_off: PowerOffMethod::Ssh,
+            ssh_user: Some("user".to_string()),
+            ssh_key_path: Some("/key".to_string()),
+            ssh_password: None,
+            ssh_shutdown_cmd: None,
+            ipmi_ip: None,
+            ipmi_user: None,
+            ipmi_password: None,
+            depends_on: deps.into_iter().map(String::from).collect(),
+            health_checks: vec![],
+            check_interval_secs: 30,
+            power_timeout_secs: 300,
+        }
+    }
+
+    // Returns the AppState plus the backing tempfile — the pool opens new
+    // connections lazily, so the file must stay on disk for the test's
+    // whole lifetime, not just while the first connection is made.
+    async fn make_state(servers: Vec<ServerConfig>) -> (Arc<AppState>, tempfile::NamedTempFile) {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let pool = db::create_pool(db_file.path().to_str().unwrap()).await.unwrap();
+        for s in &servers {
+            db::ensure_server_exists(&pool, &s.id).await.unwrap();
+        }
+
+        let validated = validate_config(&AppConfig { servers });
+        let config = create_config_handle(validated);
+        let event_bus = EventBus::new(16);
+        (AppState::new(pool, config, event_bus), db_file)
+    }
+
+    async fn counter_of(state: &Arc<AppState>, id: &str) -> i32 {
+        db::get_server_state(&state.pool, id).await.unwrap().unwrap().counter
+    }
+
+    /// Point 1 of the bug report: -1 always works down to 0, and is a no-op
+    /// (not an error) once the counter is already 0 — no caller matching
+    /// required.
+    #[tokio::test]
+    async fn decrement_floors_at_zero_and_needs_no_matching_caller() {
+        let (state, _db_file) = make_state(vec![make_server("a", vec![])]).await;
+
+        state.handle_power_on("a", "webui-1").await.unwrap();
+        state.handle_power_on("a", "webui-2").await.unwrap();
+        assert_eq!(counter_of(&state, "a").await, 2);
+
+        // Decrement with a caller string that was never used to increment —
+        // this is exactly the original bug (UI's caller didn't match).
+        state.handle_power_off("a", "some-unrelated-caller").await.unwrap();
+        assert_eq!(counter_of(&state, "a").await, 1);
+
+        state.handle_power_off("a", "some-unrelated-caller").await.unwrap();
+        assert_eq!(counter_of(&state, "a").await, 0);
+
+        // Already at 0: further decrements are harmless no-ops, not errors.
+        state.handle_power_off("a", "some-unrelated-caller").await.unwrap();
+        assert_eq!(counter_of(&state, "a").await, 0);
+    }
+
+    /// Point 2 of the bug report: incrementing/decrementing a server
+    /// cascades to every server it depends on, transitively (a -> b -> c),
+    /// not just the direct dependency.
+    #[tokio::test]
+    async fn cascade_reaches_transitive_dependencies() {
+        let (state, _db_file) = make_state(vec![
+            make_server("a", vec!["b"]),
+            make_server("b", vec!["c"]),
+            make_server("c", vec![]),
+        ]).await;
+
+        state.handle_power_on("a", "webui-1").await.unwrap();
+        assert_eq!(counter_of(&state, "a").await, 1);
+        assert_eq!(counter_of(&state, "b").await, 1, "direct dependency should be incremented");
+        assert_eq!(counter_of(&state, "c").await, 1, "transitive dependency should also be incremented");
+
+        state.handle_power_off("a", "webui-1").await.unwrap();
+        assert_eq!(counter_of(&state, "a").await, 0);
+        assert_eq!(counter_of(&state, "b").await, 0);
+        assert_eq!(counter_of(&state, "c").await, 0);
+    }
+
+    /// Reproduces the original report directly: server1 depends on server2;
+    /// server2 is only ever incremented via the dependency cascade (never
+    /// directly), and calling -1 straight on server2 must still work.
+    #[tokio::test]
+    async fn direct_decrement_on_cascade_only_dependency_works() {
+        let (state, _db_file) = make_state(vec![
+            make_server("server1", vec!["server2"]),
+            make_server("server2", vec![]),
+        ]).await;
+
+        state.handle_power_on("server1", "webui-1").await.unwrap();
+        assert_eq!(counter_of(&state, "server2").await, 1);
+
+        // -1 called directly on server2, via the API, same as clicking the
+        // button in the UI.
+        state.handle_power_off("server2", "webui-9").await.unwrap();
+        assert_eq!(counter_of(&state, "server2").await, 0);
+    }
+
+    /// A diamond dependency (a -> b, a -> c, b -> d, c -> d) must not loop
+    /// forever, and a single +1 on `a` must apply exactly one +1 to `d` —
+    /// not one per path — so a single button click never produces a
+    /// surprising jump on a shared dependency.
+    #[tokio::test]
+    async fn diamond_dependency_cascade_does_not_double_count_or_loop() {
+        let (state, _db_file) = make_state(vec![
+            make_server("a", vec!["b", "c"]),
+            make_server("b", vec!["d"]),
+            make_server("c", vec!["d"]),
+            make_server("d", vec![]),
+        ]).await;
+
+        state.handle_power_on("a", "webui-1").await.unwrap();
+        assert_eq!(counter_of(&state, "d").await, 1, "d reached via two paths from a single action, but only counted once");
+
+        state.handle_power_off("a", "webui-1").await.unwrap();
+        assert_eq!(counter_of(&state, "d").await, 0);
+
+        // Two independent top-level actions that each reach d still each
+        // contribute their own count, and unwind independently.
+        state.handle_power_on("a", "webui-2").await.unwrap();
+        state.handle_power_on("b", "webui-3").await.unwrap();
+        assert_eq!(counter_of(&state, "d").await, 2, "two separate actions, each reaching d, both count");
+
+        state.handle_power_off("a", "webui-2").await.unwrap();
+        assert_eq!(counter_of(&state, "d").await, 1, "a's action released; b's is still outstanding");
+
+        state.handle_power_off("b", "webui-3").await.unwrap();
+        assert_eq!(counter_of(&state, "d").await, 0);
     }
 }

@@ -135,7 +135,7 @@ No authentication (private network). Designed for curl and Home Assistant.
 }
 ```
 
-The `caller` field identifies who is requesting the action. Duplicate increments from the same caller are ignored (idempotent). The caller is tracked so that the corresponding `/poweroff` from the same caller correctly decrements.
+The `caller` field identifies who is requesting the action, for the audit/power log only. It has no effect on whether the request succeeds: `/poweron` always adds 1 to the counter, and `/poweroff` always subtracts 1 (floored at 0, so it's a harmless no-op once the counter is already 0). There is no per-caller ownership or idempotency check — any caller can increment or decrement any server at any time.
 
 **Counter override:**
 ```json
@@ -170,9 +170,9 @@ If a server has a dependency cycle, `config_error` contains a human-readable des
 
 ## Power Management & Dependency Engine
 
-### Reference Counter (Caller-Tracked)
+### Reference Counter
 
-Each server has a `counter` (int ≥ 0) stored in SQLite, a list of active `callers`, and a `power_state` (`off` | `pending_on` | `on` | `pending_off` | `failed`).
+Each server has a `counter` (int ≥ 0) stored in SQLite, a list of recent `callers` (for the audit/power log only — see below), and a `power_state` (`off` | `pending_on` | `on` | `pending_off` | `failed`).
 
 State transitions:
 - `off` → `pending_on` when counter goes 0→1
@@ -181,33 +181,29 @@ State transitions:
 - `on` → `pending_off` when counter goes 1→0
 - `pending_off` → `off` when health status reaches `down`
 
-**Caller tracking:**
-- **`/poweron`** with `caller`: if this caller already incremented, no-op (idempotent). Otherwise increment counter. If 0→1: set `power_state = pending_on`, start power-on sequence.
-- **`/poweroff`** with `caller`: if this caller hasn't incremented, no-op. Otherwise remove caller, decrement counter. If 1→0: set `power_state = pending_off`, start power-off sequence.
+**Counter semantics:**
+- **`/poweron`** with `caller`: always increments the counter by 1, unconditionally. If 0→1: set `power_state = pending_on`, start power-on sequence.
+- **`/poweroff`** with `caller`: always decrements the counter by 1, floored at 0. A counter already at 0 is a no-op — no error, nothing changes. If 1→0: set `power_state = pending_off`, start power-off sequence. There is no ownership check: any caller can bring any server's counter down to 0 regardless of who incremented it.
 - **`PUT /counter`**: manually override the counter value and clear all caller tracking. Emergency escape hatch for stuck states.
 - **`/forcepoweron`** / **`/forcepoweroff`**: bypass counter entirely, call hardware directly.
 
-### Dependency Chain — Power On
+### Dependency Chain — Power On / Power Off
+
+A `+1`/`-1` on server A applies the same `+1`/`-1` to every server A transitively depends on (not just direct dependencies) — walked breadth-first, each server visited at most once per call so a diamond dependency (A depends on B and C, both of which depend on D) doesn't double-count D from a single click, and a config cycle can't loop forever.
 
 When server A (`depends_on: [B]`) is powered on:
 
-1. Increment A's counter (0→1 triggers sequence)
-2. Increment B's counter (propagate dependency; if 0→1, trigger B's power-on too)
-3. Background task: send WoL/IPMI to B, then retry until B's health status = `up` or `power_on_timeout_secs` is exceeded
-4. If B reaches `up`: send WoL/IPMI to A
-5. If timeout exceeded: transition to `failed`, stop retrying, emit SSE event
-
-### Dependency Chain — Power Off
+1. Increment A's counter (0→1 triggers A's power-on sequence)
+2. Increment B's counter (0→1 triggers B's power-on sequence too, independently)
+3. Each server's own background task sends WoL/IPMI and retries until its health status = `up` or `power_on_timeout_secs` is exceeded; A's sequence additionally waits for B's health to reach `up` before sending WoL/IPMI to A
+4. If timeout exceeded: transition to `failed`, stop retrying, emit SSE event
 
 When server A (`depends_on: [B]`) is powered off:
 
-1. Decrement A's counter
-2. If A's counter hits 0: send SSH/IPMI shutdown to A
-3. Background task: wait until A's health status = `down`
-4. Once A is `down`: decrement B's counter
-5. If B's counter hits 0: send shutdown to B
+1. Decrement A's counter. If it hits 0: set `power_state = pending_off`, send SSH/IPMI shutdown to A in the background.
+2. Decrement B's counter in the same call, immediately (not gated on A actually finishing its shutdown). If B's counter hits 0: same as above, B starts shutting down.
 
-This means B stays on as long as any server that depends on it still has counter > 0.
+Because the counter is a plain floored total, any caller can decrement any server directly — including one whose only demand came from a dependent's cascade. E.g. if only A ever incremented B (via the cascade above), calling `/poweroff` directly on B still works and brings B's counter to 0.
 
 ### Cycle Detection
 

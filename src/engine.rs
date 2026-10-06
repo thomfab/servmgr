@@ -30,7 +30,16 @@ pub struct AppState {
     pub event_bus: EventBus,
     tasks: RwLock<HashMap<String, (JoinHandle<()>, CancellationToken)>>,
     triggers: RwLock<HashMap<String, Arc<Notify>>>,
-    power_tasks: RwLock<HashMap<String, (JoinHandle<()>, CancellationToken)>>,
+    power_tasks: RwLock<HashMap<String, (JoinHandle<()>, CancellationToken, ServerConfig)>>,
+}
+
+/// Compares only the config fields a running `power_on_sequence` actually
+/// bakes into its own behavior (the dependency list it waits on, and the
+/// deadline it computes once at the start). A changed power method,
+/// credential, health check, name, etc. doesn't make an in-flight task
+/// stale, since the task doesn't consult those again mid-flight.
+fn power_relevant_fields_changed(old: &ServerConfig, new: &ServerConfig) -> bool {
+    old.depends_on != new.depends_on || old.power_timeout_secs != new.power_timeout_secs
 }
 
 impl AppState {
@@ -290,23 +299,7 @@ impl AppState {
                 .await
                 .map_err(|e| e.to_string())?;
             self.trigger_fast_check(server_id).await;
-
-            let state = Arc::clone(self);
-            let server_clone = server;
-            let sid = server_id.to_string();
-            let token = CancellationToken::new();
-            let token_clone = token.clone();
-
-            let handle = tokio::spawn(async move {
-                state.power_on_sequence(&server_clone, token_clone).await;
-            });
-
-            let mut power_tasks = self.power_tasks.write().await;
-            if let Some((old_handle, old_token)) = power_tasks.remove(server_id) {
-                old_token.cancel();
-                old_handle.abort();
-            }
-            power_tasks.insert(sid, (handle, token));
+            self.spawn_power_on_sequence(&server).await;
         }
 
         if let Some(state) = self.get_server_state(server_id).await {
@@ -358,6 +351,28 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Spawns (and registers in `power_tasks`) a fresh `power_on_sequence`
+    /// for `server`, cancelling and replacing whatever was previously
+    /// tracked for its id, if anything.
+    async fn spawn_power_on_sequence(self: &Arc<Self>, server: &ServerConfig) {
+        let state = Arc::clone(self);
+        let server_clone = server.clone();
+        let sid = server.id.clone();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        let handle = tokio::spawn(async move {
+            state.power_on_sequence(&server_clone, token_clone).await;
+        });
+
+        let mut power_tasks = self.power_tasks.write().await;
+        if let Some((old_handle, old_token, _)) = power_tasks.remove(&sid) {
+            old_token.cancel();
+            old_handle.abort();
+        }
+        power_tasks.insert(sid, (handle, token, server.clone()));
     }
 
     async fn power_on_sequence(self: &Arc<Self>, server: &ServerConfig, cancel: CancellationToken) {
@@ -477,7 +492,7 @@ impl AppState {
             // Cancel in-flight power-on sequence before issuing shutdown
             {
                 let mut power_tasks = self.power_tasks.write().await;
-                if let Some((handle, token)) = power_tasks.remove(server_id) {
+                if let Some((handle, token, _)) = power_tasks.remove(server_id) {
                     token.cancel();
                     handle.abort();
                 }
@@ -540,7 +555,7 @@ impl AppState {
         // Cancel any in-flight power sequence
         {
             let mut power_tasks = self.power_tasks.write().await;
-            if let Some((handle, token)) = power_tasks.remove(server_id) {
+            if let Some((handle, token, _)) = power_tasks.remove(server_id) {
                 token.cancel();
                 handle.abort();
             }
@@ -625,18 +640,62 @@ impl AppState {
     pub async fn handle_config_reload(self: &Arc<Self>) {
         let config = self.config.read().await;
 
-        // Cancel power tasks for servers whose deps changed
-        let mut power_tasks = self.power_tasks.write().await;
-        for (id, (handle, token)) in power_tasks.drain() {
-            token.cancel();
-            handle.abort();
+        // Only touch power tasks whose depends_on/power_timeout_secs
+        // actually changed (or whose server disappeared from config
+        // entirely) -- everything else keeps running undisturbed, so an
+        // unrelated edit no longer cuts short a server that's legitimately
+        // still mid-boot.
+        let stale_ids: Vec<String> = {
+            let power_tasks = self.power_tasks.read().await;
+            power_tasks
+                .iter()
+                .filter(|(id, (_, _, old_server))| {
+                    match config.servers.iter().find(|s| &s.id == *id) {
+                        Some(new_server) => power_relevant_fields_changed(old_server, new_server),
+                        None => true,
+                    }
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        for id in &stale_ids {
+            let had_task = {
+                let mut power_tasks = self.power_tasks.write().await;
+                if let Some((handle, token, _)) = power_tasks.remove(id) {
+                    token.cancel();
+                    handle.abort();
+                    true
+                } else {
+                    false
+                }
+            };
+            if !had_task {
+                continue;
+            }
             info!("Cancelled in-flight power task for {id} due to config reload");
-            self.event_bus.send(SseEvent::ConfigReloaded {
-                server_id: id,
-                message: "Power sequence cancelled due to config change".to_string(),
-            });
+
+            // If the server still exists and still wants to be on, restart
+            // its sequence against the new config instead of leaving it
+            // stuck with nothing tracking its timeout anymore.
+            let mut restarted = false;
+            if let Some(server) = config.servers.iter().find(|s| &s.id == id) {
+                if let Ok(Some(row)) = db::get_server_state(&self.pool, id).await {
+                    if row.counter > 0 && row.power_state == PowerState::PendingOn {
+                        self.trigger_fast_check(id).await;
+                        self.spawn_power_on_sequence(server).await;
+                        restarted = true;
+                    }
+                }
+            }
+
+            let message = if restarted {
+                "Power sequence restarted due to config change".to_string()
+            } else {
+                "Power sequence cancelled due to config change".to_string()
+            };
+            self.event_bus.send(SseEvent::ConfigReloaded { server_id: id.clone(), message });
         }
-        drop(power_tasks);
 
         // Restart health check tasks
         let mut tasks = self.tasks.write().await;
@@ -724,6 +783,93 @@ mod tests {
             PowerState::PendingOn,
             "a config reload must not force a still-booting server to Off"
         );
+    }
+
+    /// A reload triggered by editing some *other* server (nothing about
+    /// `main`'s depends_on/power_timeout_secs changed) must leave `main`'s
+    /// in-flight power-on sequence completely alone, not cancel it.
+    #[tokio::test]
+    async fn config_reload_leaves_power_task_alone_when_its_relevant_fields_are_unchanged() {
+        let (state, _db_file) = make_state(vec![
+            make_server("dep", vec![]), // never becomes Up, so "main" keeps waiting
+            make_server("main", vec!["dep"]),
+        ]).await;
+
+        state.handle_power_on("main", "test").await.unwrap();
+
+        let task_id_before = {
+            let power_tasks = state.power_tasks.read().await;
+            power_tasks.get("main").unwrap().0.id()
+        };
+
+        // Simulate a reload where "main" itself is untouched but some
+        // unrelated field (name) changed — depends_on/power_timeout_secs
+        // are identical to what the running task already captured.
+        {
+            let mut cfg = state.config.write().await;
+            let mut renamed_main = make_server("main", vec!["dep"]);
+            renamed_main.name = "Renamed".to_string();
+            cfg.servers = vec![make_server("dep", vec![]), renamed_main];
+        }
+
+        state.handle_config_reload().await;
+
+        let task_id_after = {
+            let power_tasks = state.power_tasks.read().await;
+            power_tasks.get("main").unwrap().0.id()
+        };
+        assert_eq!(
+            task_id_before, task_id_after,
+            "the in-flight power task must not be replaced when depends_on/power_timeout_secs are unchanged"
+        );
+    }
+
+    /// A reload that actually changes `main`'s `depends_on` must cancel the
+    /// stale task (which is waiting on the OLD dependency list) and restart
+    /// a fresh one that re-evaluates against the NEW config, rather than
+    /// leaving `main` stuck with no timeout tracking at all.
+    #[tokio::test]
+    async fn config_reload_restarts_power_task_when_depends_on_changes() {
+        let (state, _db_file) = make_state(vec![
+            make_server("dep", vec![]),
+            make_server("other_dep", vec![]),
+            make_server("main", vec!["dep"]),
+        ]).await;
+
+        state.handle_power_on("main", "test").await.unwrap();
+
+        let task_id_before = {
+            let power_tasks = state.power_tasks.read().await;
+            power_tasks.get("main").unwrap().0.id()
+        };
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.servers = vec![
+                make_server("dep", vec![]),
+                make_server("other_dep", vec![]),
+                make_server("main", vec!["other_dep"]),
+            ];
+        }
+
+        state.handle_config_reload().await;
+
+        let task_id_after = {
+            let power_tasks = state.power_tasks.read().await;
+            power_tasks
+                .get("main")
+                .expect("a fresh power task must be running after the restart")
+                .0
+                .id()
+        };
+        assert_ne!(
+            task_id_before, task_id_after,
+            "a changed depends_on must replace the stale task with a fresh one"
+        );
+
+        let row = db::get_server_state(&state.pool, "main").await.unwrap().unwrap();
+        assert_eq!(row.power_state, PowerState::PendingOn, "the restarted sequence should still be tracking main");
+        assert_eq!(row.counter, 1, "restarting the task must not touch the counter");
     }
 
     /// Point 1 of the bug report: -1 always works down to 0, and is a no-op

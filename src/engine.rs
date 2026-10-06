@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use sqlx::SqlitePool;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{broadcast, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -16,6 +16,13 @@ use crate::health;
 use crate::power;
 use crate::types::*;
 
+
+#[derive(Debug, PartialEq)]
+enum WaitOutcome {
+    Met,
+    TimedOut,
+    Cancelled,
+}
 
 pub struct AppState {
     pub pool: SqlitePool,
@@ -292,26 +299,62 @@ impl AppState {
         Ok(())
     }
 
+    /// Waits until `predicate` holds for `watch_id`'s DB row, reacting to
+    /// `event_bus` updates instead of polling on a fixed interval. The event
+    /// only tells us to recheck the DB — it never carries enough information
+    /// on its own to decide the predicate, since `SseEvent::Update` carries
+    /// the derived display status, not the raw health/power fields callers
+    /// test against.
+    async fn wait_for(
+        self: &Arc<Self>,
+        watch_id: &str,
+        deadline: tokio::time::Instant,
+        cancel: &CancellationToken,
+        mut predicate: impl FnMut(&db::ServerRow) -> bool,
+    ) -> WaitOutcome {
+        // Subscribe before the first check so a transition landing between
+        // the check and the subscribe can't be missed.
+        let mut rx = self.event_bus.subscribe();
+
+        loop {
+            if let Ok(Some(row)) = db::get_server_state(&self.pool, watch_id).await {
+                if predicate(&row) {
+                    return WaitOutcome::Met;
+                }
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return WaitOutcome::TimedOut;
+            }
+
+            tokio::select! {
+                _ = cancel.cancelled() => return WaitOutcome::Cancelled,
+                _ = tokio::time::sleep(remaining) => return WaitOutcome::TimedOut,
+                event = rx.recv() => {
+                    match event {
+                        Ok(SseEvent::Update(state)) if state.id == watch_id => {}
+                        Ok(_) => continue,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return WaitOutcome::TimedOut,
+                    }
+                }
+            }
+        }
+    }
+
     async fn power_on_sequence(self: &Arc<Self>, server: &ServerConfig, cancel: CancellationToken) {
-        let timeout = Duration::from_secs(server.power_timeout_secs);
-        let start = tokio::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(server.power_timeout_secs);
 
         // Wait for dependencies to be up
         for dep_id in &server.depends_on {
-            loop {
-                if cancel.is_cancelled() {
-                    return;
-                }
-                if start.elapsed() > timeout {
+            match self.wait_for(dep_id, deadline, &cancel, |row| row.status == HealthStatus::Up).await {
+                WaitOutcome::Met => {}
+                WaitOutcome::Cancelled => return,
+                WaitOutcome::TimedOut => {
                     self.transition_to_failed(&server.id).await;
                     return;
                 }
-                if let Ok(Some(dep_row)) = db::get_server_state(&self.pool, dep_id).await {
-                    if dep_row.status == HealthStatus::Up {
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
 
@@ -320,25 +363,17 @@ impl AppState {
             error!("Power on failed for {}: {e}", server.id);
         }
 
-        // Wait for server to come up or timeout
-        loop {
-            if cancel.is_cancelled() {
-                return;
-            }
-            if start.elapsed() > timeout {
-                self.transition_to_failed(&server.id).await;
-                return;
-            }
-            if let Ok(Some(row)) = db::get_server_state(&self.pool, &server.id).await {
-                if row.power_state == PowerState::On {
-                    return;
-                }
-                // Counter was decremented or force-off issued — stop tracking
-                if row.power_state != PowerState::PendingOn {
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+        // Wait for server to come up or timeout. Any power_state other than
+        // PendingOn (e.g. counter decremented, force-off) also ends the wait
+        // without a failure — the task simply stops tracking it.
+        let outcome = self
+            .wait_for(&server.id, deadline, &cancel, |row| {
+                row.power_state == PowerState::On || row.power_state != PowerState::PendingOn
+            })
+            .await;
+
+        if outcome == WaitOutcome::TimedOut {
+            self.transition_to_failed(&server.id).await;
         }
     }
 
@@ -745,5 +780,141 @@ mod tests {
 
         state.handle_power_off("b", "webui-3").await.unwrap();
         assert_eq!(counter_of(&state, "d").await, 0);
+    }
+
+    /// `wait_for` must resolve as soon as a matching event_bus update arrives,
+    /// not only on its next poll tick. The deadline here (5s) is far longer
+    /// than the 500ms the test allows, so a pass only happens if the event
+    /// itself woke the waiter.
+    #[tokio::test]
+    async fn wait_for_reacts_to_event_instead_of_waiting_for_a_poll_tick() {
+        let (state, _db_file) = make_state(vec![make_server("dep", vec![])]).await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let wait_state = Arc::clone(&state);
+        let handle = tokio::spawn(async move {
+            let cancel = CancellationToken::new();
+            wait_state
+                .wait_for("dep", deadline, &cancel, |row| row.status == HealthStatus::Up)
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        db::update_health_status(&state.pool, "dep", HealthStatus::Up, "on", &[], 0, Utc::now())
+            .await
+            .unwrap();
+        let updated = state.get_server_state("dep").await.unwrap();
+        state.event_bus.send(SseEvent::Update(updated));
+
+        let outcome = tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("wait_for should react to the event well before the 5s deadline")
+            .unwrap();
+
+        assert!(matches!(outcome, WaitOutcome::Met));
+    }
+
+    /// If the predicate never becomes true, `wait_for` must give up at the
+    /// deadline rather than waiting forever.
+    #[tokio::test]
+    async fn wait_for_times_out_when_predicate_never_holds() {
+        let (state, _db_file) = make_state(vec![make_server("dep", vec![])]).await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+        let cancel = CancellationToken::new();
+
+        let outcome = state
+            .wait_for("dep", deadline, &cancel, |row| row.status == HealthStatus::Up)
+            .await;
+
+        assert_eq!(outcome, WaitOutcome::TimedOut);
+    }
+
+    /// Cancelling the token must interrupt the wait immediately, even with a
+    /// deadline that's still far away.
+    #[tokio::test]
+    async fn wait_for_stops_promptly_when_cancelled() {
+        let (state, _db_file) = make_state(vec![make_server("dep", vec![])]).await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let wait_state = Arc::clone(&state);
+        let handle = tokio::spawn(async move {
+            wait_state
+                .wait_for("dep", deadline, &cancel_clone, |row| row.status == HealthStatus::Up)
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let outcome = tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("cancellation should stop the wait well before the 30s deadline")
+            .unwrap();
+
+        assert_eq!(outcome, WaitOutcome::Cancelled);
+    }
+
+    /// End-to-end: `power_on_sequence`'s dependency wait must proceed as soon
+    /// as the dependency's health-check event fires, not on the old loop's
+    /// 5s poll tick. `main`'s power_timeout_secs (300s, via make_server) is
+    /// far longer than this test's window, so completing in time only
+    /// happens if the event itself unblocked the wait.
+    #[tokio::test]
+    async fn power_on_sequence_proceeds_as_soon_as_dependency_event_fires() {
+        let (state, _db_file) = make_state(vec![
+            make_server("main", vec!["dep"]),
+            make_server("dep", vec![]),
+        ]).await;
+
+        db::update_power_state(&state.pool, "main", PowerState::PendingOn).await.unwrap();
+
+        let main_config = {
+            let config = state.config.read().await;
+            config.servers.iter().find(|s| s.id == "main").unwrap().clone()
+        };
+
+        let seq_state = Arc::clone(&state);
+        let handle = tokio::spawn(async move {
+            seq_state.power_on_sequence(&main_config, CancellationToken::new()).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        db::update_health_status(&state.pool, "dep", HealthStatus::Up, "on", &[], 0, Utc::now())
+            .await
+            .unwrap();
+        let updated = state.get_server_state("dep").await.unwrap();
+        state.event_bus.send(SseEvent::Update(updated));
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        handle.abort();
+
+        let log = db::get_power_log(&state.pool, "main", 5).await.unwrap();
+        assert!(
+            log.iter().any(|e| e.command == "wol"),
+            "power-on command should have been sent once the dependency came up, well within 250ms"
+        );
+    }
+
+    /// If the dependency never comes up, the dependent must still fail at
+    /// its configured power_timeout_secs rather than waiting forever for an
+    /// event that's never coming.
+    #[tokio::test]
+    async fn power_on_sequence_fails_when_dependency_never_comes_up() {
+        let mut main = make_server("main", vec!["dep"]);
+        main.power_timeout_secs = 1;
+        let (state, _db_file) = make_state(vec![main.clone(), make_server("dep", vec![])]).await;
+
+        db::update_power_state(&state.pool, "main", PowerState::PendingOn).await.unwrap();
+
+        state.power_on_sequence(&main, CancellationToken::new()).await;
+
+        let row = db::get_server_state(&state.pool, "main").await.unwrap().unwrap();
+        assert_eq!(row.power_state, PowerState::Failed);
     }
 }

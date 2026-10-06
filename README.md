@@ -16,7 +16,7 @@ A word of warning: the app is basic and only intended for a home setup running i
 
 - **Reference-counted power management**: servers stay on as long as at least one caller needs them, and shut down automatically when the counter reaches zero
 - **Dependency graph**: declare that server B requires server A — servmgr starts A first and shuts it down last
-- **Health checks**: ping, HTTP, TCP port, SSH, and IPMI power status — the dashboard updates in real time via SSE
+- **Health checks**: ping (always on), HTTP, TCP port, SSH, and IPMI power status — the dashboard updates in real time via SSE. Each check beyond ping can be marked informational-only, so it's still shown but doesn't affect the server's up/down status
 - **Multiple power methods**: Wake-on-LAN (with optional directed broadcast for VMs), IPMI, and SSH shutdown
 - **Fast transition polling**: when a power-on or power-off is triggered, health checks run every 3 s until the transition completes, then revert to the configured interval
 - **Config editor**: full YAML config editable in the browser — no need to SSH into the server
@@ -76,7 +76,6 @@ servers:
     ssh_password: "secret"
     ssh_shutdown_cmd: "sudo poweroff"
     health_checks:
-      - type: ping
       - type: tcp
         port: 445
 
@@ -92,7 +91,6 @@ servers:
     depends_on:
       - nas
     health_checks:
-      - type: ping
       - type: ssh
 
   - id: server
@@ -104,8 +102,8 @@ servers:
     ipmi_user: "admin"
     ipmi_password: "secret"
     health_checks:
-      - type: ping
       - type: ipmi_power
+        counts_toward_status: false  # informational only — ping already covers up/down here
 ```
 
 ### Config fields
@@ -133,13 +131,16 @@ servers:
 
 ### Health check types
 
+Ping always runs automatically for every server and always counts toward its up/down status — there's no need to (and no way to) add it explicitly.
+
 | Type | Description |
 |------|-------------|
-| `ping` | ICMP echo |
 | `http` | HTTP GET — requires `url` field |
 | `tcp` | TCP connect — requires `port` field |
 | `ssh` | SSH handshake on port 22 |
 | `ipmi_power` | IPMI chassis power status via `ipmitool` |
+
+Each of the above also accepts `counts_toward_status: false` (default `true`) to keep the check running and visible on the dashboard without letting its result affect the server's overall Up/Degraded/Down status.
 
 ## Building locally
 

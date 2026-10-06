@@ -108,17 +108,19 @@ Transitions:
 
 Checks run at `check_interval_secs` (per-server, default 30).
 
-**Overall status**:
-- `up`: all checks pass
-- `degraded`: some pass, some fail
-- `down`: all fail
+**Overall status** is computed only from checks where `counts_toward_status` is `true` (default `true`; see below):
+- `up`: all counting checks pass
+- `degraded`: some counting checks pass, some fail
+- `down`: no counting checks pass
 
 **Check types**:
-- `ping`: ICMP echo via surge-ping
+- `ping`: ICMP echo via surge-ping. Always runs automatically, even if not listed in `health_checks`, and always counts toward status — it can't be removed or excluded.
 - `http`/`https`: GET request, 2xx = pass
 - `tcp`: TCP connect with 5s timeout
 - `ssh`: TCP connect to port 22
-- `ipmi_power`: `ipmitool chassis power status`, "on" = pass
+- `ipmi_power`: `ipmitool chassis power status`, "on" = pass. Auto-added (and always counts) if `power_on`/`power_off` is `ipmi` and no explicit `ipmi_power` check is configured.
+
+**`counts_toward_status`** (per check, default `true`): when `false`, the check still runs and its result is still shown, but it's excluded from the overall status calculation above — useful for a check you want visibility into without letting it gate the server's Up/Degraded/Down state.
 
 ## Dependency Behavior
 
@@ -127,7 +129,7 @@ Checks run at `check_interval_secs` (per-server, default 30).
 When server A depends on B:
 1. B's counter is incremented with caller `dep:A`
 2. B is powered on first
-3. System waits until B is healthy
+3. System waits until B is healthy — reacting to B's health-check updates as they happen rather than polling on a fixed interval, bounded by A's `power_timeout_secs`
 4. Then A is powered on
 
 ### Power Off

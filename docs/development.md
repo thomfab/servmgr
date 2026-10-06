@@ -91,6 +91,9 @@ Tests cover:
 - Cycle detection (config validation)
 - MAC address parsing (WoL)
 - Config parsing and defaults
+- Reference counter / dependency cascade behavior
+- Power-on sequencing: event-driven dependency and self waits, and timeout handling
+- Health check status computation, including automatic ping injection and `counts_toward_status` filtering
 
 ## Building the Docker Image
 

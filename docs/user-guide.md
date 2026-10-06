@@ -63,7 +63,6 @@ servers:
     ssh_user: "thomas"
     ssh_key_path: "/config/id_rsa"
     health_checks:
-      - type: ping
       - type: http
         url: "http://nas.local:8096"
       - type: tcp
@@ -81,8 +80,8 @@ servers:
     depends_on:
       - nas
     health_checks:
-      - type: ping
       - type: ipmi_power
+        counts_toward_status: false  # informational only — ping already covers up/down here
     check_interval_secs: 60
 ```
 
@@ -97,7 +96,7 @@ servers:
 | `hostname` | Yes | Network hostname or IP |
 | `power_on` | Yes | `wol` or `ipmi` |
 | `power_off` | Yes | `ssh` or `ipmi` |
-| `health_checks` | Yes | Array of check definitions |
+| `health_checks` | Yes | Array of check definitions, beyond the automatic ping (see below) — use `health_checks: []` if you only want ping |
 | `mac` | If wol | MAC address for Wake-on-LAN |
 | `wol_broadcast` | No | Directed broadcast address for WoL (e.g. `192.168.1.255`). Recommended when running behind a hypervisor (ESXi, Proxmox) where `255.255.255.255` may not leave the virtual switch. Both addresses are tried when set. |
 | `ipmi_ip` | If ipmi | IPMI BMC IP address |
@@ -113,13 +112,16 @@ servers:
 
 ### Health check types
 
+Ping always runs automatically for every server and always counts toward its status — there's no `type: ping` to add or remove.
+
 | Type | Extra fields | What it checks |
 |------|-------------|----------------|
-| `ping` | — | ICMP echo reply |
 | `http` | `url` | HTTP GET returns 2xx |
 | `tcp` | `port` | TCP connection succeeds |
 | `ssh` | — | TCP connect to port 22 |
 | `ipmi_power` | — | IPMI reports chassis power on |
+
+Each of the above also accepts `counts_toward_status: false` (default `true`) to keep the check running and visible without letting it affect the server's overall Up/Degraded/Down status.
 
 ## Web UI
 

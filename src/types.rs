@@ -32,6 +32,12 @@ pub struct HealthCheckConfig {
     pub url: Option<String>,
     pub port: Option<u16>,
     pub label: Option<String>,
+    #[serde(default = "default_counts_toward_status")]
+    pub counts_toward_status: bool,
+}
+
+fn default_counts_toward_status() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +213,7 @@ pub struct CheckResult {
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    pub counts_toward_status: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

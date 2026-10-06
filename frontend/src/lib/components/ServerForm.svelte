@@ -4,6 +4,7 @@
 		url?: string;
 		port?: number;
 		label?: string;
+		counts_toward_status: boolean;
 	}
 
 	interface ServerFormData {
@@ -50,7 +51,7 @@
 		ipmi_user: '',
 		ipmi_password: '',
 		depends_on: '',
-		health_checks: [{ type: 'ping' }],
+		health_checks: [],
 		check_interval_secs: 30,
 		power_on_timeout_secs: 300,
 	});
@@ -59,7 +60,7 @@
 	let sshAuthMode = $state<'key' | 'password'>(initial?.ssh_password ? 'password' : 'key');
 
 	function addCheck() {
-		form.health_checks = [...form.health_checks, { type: 'ping' }];
+		form.health_checks = [...form.health_checks, { type: 'http', counts_toward_status: true }];
 	}
 
 	function removeCheck(index: number) {
@@ -191,10 +192,10 @@
 
 	<fieldset>
 		<legend>Health Checks</legend>
+		<span class="hint">✓ Ping is always checked and always counts toward the server's status.</span>
 		{#each form.health_checks as check, i}
 			<div class="check-row">
 				<select bind:value={check.type}>
-					<option value="ping">Ping</option>
 					<option value="http">HTTP</option>
 					<option value="tcp">TCP Port</option>
 					<option value="ssh">SSH (port 22)</option>
@@ -209,6 +210,10 @@
 				{#if check.type === 'http' || check.type === 'tcp'}
 					<input type="text" bind:value={check.label} placeholder="Label (optional)" class="check-label-input" />
 				{/if}
+				<label class="counts-check">
+					<input type="checkbox" bind:checked={check.counts_toward_status} />
+					Counts toward status
+				</label>
 				<button type="button" class="btn-remove" onclick={() => removeCheck(i)}>×</button>
 			</div>
 		{/each}
@@ -341,6 +346,19 @@
 	}
 	.check-label-input {
 		width: 130px;
+	}
+	.counts-check {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+		white-space: nowrap;
+		cursor: pointer;
+	}
+	.counts-check input[type="checkbox"] {
+		width: auto;
+		padding: 0;
 	}
 	.btn-remove {
 		background: var(--color-red);

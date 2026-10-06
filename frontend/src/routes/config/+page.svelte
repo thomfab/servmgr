@@ -20,7 +20,7 @@
 		ipmi_user?: string;
 		ipmi_password?: string;
 		depends_on?: string[];
-		health_checks: { type: string; url?: string; port?: number; label?: string }[];
+		health_checks: { type: string; url?: string; port?: number; label?: string; counts_toward_status?: boolean }[];
 		check_interval_secs?: number;
 		power_on_timeout_secs?: number;
 	}
@@ -41,7 +41,7 @@
 		ipmi_user: string;
 		ipmi_password: string;
 		depends_on: string;
-		health_checks: { type: string; url?: string; port?: number; label?: string }[];
+		health_checks: { type: string; url?: string; port?: number; label?: string; counts_toward_status: boolean }[];
 		check_interval_secs: number;
 		power_on_timeout_secs: number;
 	}
@@ -84,7 +84,11 @@
 			ipmi_user: entry.ipmi_user || '',
 			ipmi_password: entry.ipmi_password || '',
 			depends_on: (entry.depends_on || []).join(', '),
-			health_checks: entry.health_checks.length > 0 ? entry.health_checks : [{ type: 'ping' }],
+			// Ping is always run automatically now — drop any leftover explicit
+			// `type: ping` row from older configs rather than showing a dead entry.
+			health_checks: entry.health_checks
+				.filter(c => c.type !== 'ping')
+				.map(c => ({ ...c, counts_toward_status: c.counts_toward_status ?? true })),
 			check_interval_secs: entry.check_interval_secs ? Number(entry.check_interval_secs) : 30,
 			power_on_timeout_secs: entry.power_on_timeout_secs ? Number(entry.power_on_timeout_secs) : 300,
 		};

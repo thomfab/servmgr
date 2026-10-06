@@ -85,9 +85,12 @@ stateDiagram-v2
   "type": "ping|http|tcp|ssh|ipmi_power",
   "ok": true,
   "latency_ms": 2,
-  "port": 22
+  "port": 22,
+  "counts_toward_status": true
 }
 ```
+
+A `ping` result is always present, even if `health_checks` in config doesn't list one — it runs automatically and always has `counts_toward_status: true`. For any other check, `counts_toward_status` (default `true`) controls whether its `ok` value feeds into `server_state.status`; when `false`, the result is still recorded here for display, just excluded from that computation.
 
 ### Callers (stored in `callers` column)
 

@@ -133,6 +133,14 @@ impl AppState {
     }
 
     pub async fn run_startup_reconciliation(self: &Arc<Self>) {
+        self.refresh_health_and_config_errors().await;
+        self.reconcile_power_states().await;
+    }
+
+    /// Ensures every server exists in the DB, refreshes its config-error
+    /// flag, and runs one health check. Safe to call anytime — including on
+    /// every hot config reload — since it never touches `power_state`.
+    async fn refresh_health_and_config_errors(self: &Arc<Self>) {
         let config = self.config.read().await;
         for server in &config.servers {
             db::ensure_server_exists(&self.pool, &server.id).await.ok();
@@ -144,8 +152,17 @@ impl AppState {
             // Run initial health check
             self.run_health_check(server).await;
         }
+    }
 
-        // Reconcile power states
+    /// Forces `power_state` to match currently observed health when they
+    /// disagree (e.g. a server recorded "on" that's actually unreachable).
+    /// Only safe right after a genuine process (re)start, when nothing is
+    /// actively tracking a server's power-on/off sequence yet — a server
+    /// legitimately mid-boot is also `Pending*` + not-yet-healthy, and
+    /// forcing it off here would cut its `power_timeout_secs` short. Do NOT
+    /// call this from a hot config-reload path.
+    async fn reconcile_power_states(self: &Arc<Self>) {
+        let config = self.config.read().await;
         for server in &config.servers {
             if let Ok(Some(row)) = db::get_server_state(&self.pool, &server.id).await {
                 let reconciled = match (row.power_state, row.status) {
@@ -631,8 +648,10 @@ impl AppState {
         self.triggers.write().await.clear();
         drop(config);
 
-        // Re-initialize
-        self.run_startup_reconciliation().await;
+        // Re-initialize. Deliberately skips reconcile_power_states — a
+        // server mid-power-on/off here is legitimately Pending* and not yet
+        // healthy; only a real process restart should treat that as stale.
+        self.refresh_health_and_config_errors().await;
         self.start_health_checks().await;
     }
 }
@@ -683,6 +702,28 @@ mod tests {
 
     async fn counter_of(state: &Arc<AppState>, id: &str) -> i32 {
         db::get_server_state(&state.pool, id).await.unwrap().unwrap().counter
+    }
+
+    /// Reproduces the live bug report: a server mid-boot (PendingOn, still
+    /// Down because it hasn't finished booting yet — well within its
+    /// power_timeout_secs) must not be force-reconciled to Off just because
+    /// a config file save (e.g. editing some other, unrelated server)
+    /// triggered a hot-reload. Only a genuine process restart should trust
+    /// stale DB state enough to force Pending* -> Off/On.
+    #[tokio::test]
+    async fn config_reload_does_not_kill_a_server_still_mid_power_on() {
+        let (state, _db_file) = make_state(vec![make_server("booting", vec![])]).await;
+
+        db::update_power_state(&state.pool, "booting", PowerState::PendingOn).await.unwrap();
+
+        state.handle_config_reload().await;
+
+        let row = db::get_server_state(&state.pool, "booting").await.unwrap().unwrap();
+        assert_eq!(
+            row.power_state,
+            PowerState::PendingOn,
+            "a config reload must not force a still-booting server to Off"
+        );
     }
 
     /// Point 1 of the bug report: -1 always works down to 0, and is a no-op

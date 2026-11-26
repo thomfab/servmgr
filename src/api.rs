@@ -14,6 +14,7 @@ use crate::config;
 use crate::db;
 use crate::engine::AppState;
 use crate::events::SseEvent;
+use crate::retention;
 use crate::types::ServerState;
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -29,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/servers/{id}/counter", put(set_counter))
         .route("/api/config", get(get_config))
         .route("/api/config", put(put_config))
+        .route("/api/stats", get(get_stats))
         .route("/api/events", get(sse_handler))
         .with_state(state)
 }
@@ -153,6 +155,31 @@ async fn get_power_log(
         .await
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    db_size_bytes: i64,
+    history_oldest: Option<DateTime<Utc>>,
+    history_retention_days: u32,
+    last_purge: Option<DateTime<Utc>>,
+}
+
+async fn get_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsResponse>, StatusCode> {
+    let err = |_| StatusCode::INTERNAL_SERVER_ERROR;
+    let db_size_bytes = db::get_db_size_bytes(&state.pool).await.map_err(err)?;
+    let history_oldest = db::get_oldest_history_timestamp(&state.pool).await.map_err(err)?;
+    let last_purge = db::get_meta(&state.pool, retention::LAST_PURGE_KEY)
+        .await
+        .map_err(err)?
+        .and_then(|s| s.parse().ok());
+    let history_retention_days = state.config.read().await.history_retention_days;
+    Ok(Json(StatsResponse {
+        db_size_bytes,
+        history_oldest,
+        history_retention_days,
+        last_purge,
+    }))
 }
 
 async fn get_config(State(_state): State<Arc<AppState>>) -> Result<String, StatusCode> {

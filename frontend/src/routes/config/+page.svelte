@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { getConfig, putConfig } from '$lib/api';
 	import ServerForm from '$lib/components/ServerForm.svelte';
-	import { serversToYaml, parseConfigYaml } from '$lib/config-yaml';
+	import { serversToYaml, parseConfigYaml, DEFAULT_SETTINGS, type AppSettings } from '$lib/config-yaml';
 
 	interface ServerEntry {
 		id: string;
@@ -47,6 +47,8 @@
 	}
 
 	let servers = $state<ServerEntry[]>([]);
+	let settings = $state<AppSettings>({ ...DEFAULT_SETTINGS });
+	let retentionInput = $state(DEFAULT_SETTINGS.history_retention_days);
 	let editing = $state<FormData | null>(null);
 	let adding = $state(false);
 	let message = $state<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -62,6 +64,8 @@
 		try {
 			const parsed = parseConfigYaml(yaml);
 			servers = parsed.servers || [];
+			settings = parsed.settings;
+			retentionInput = settings.history_retention_days;
 		} catch {
 			servers = [];
 		}
@@ -119,12 +123,13 @@
 		return entry;
 	}
 
-	async function saveAll(newServers: ServerEntry[]) {
+	async function saveAll(newServers: ServerEntry[], newSettings: AppSettings = settings) {
 		message = null;
-		const yaml = serversToYaml(newServers);
+		const yaml = serversToYaml(newServers, newSettings);
 		try {
 			await putConfig(yaml);
 			servers = newServers;
+			settings = newSettings;
 			message = { type: 'success', text: 'Config saved.' };
 			editing = null;
 			adding = false;
@@ -160,6 +165,15 @@
 		saveAll(newServers);
 	}
 
+	function saveSettings() {
+		const days = Math.floor(Number(retentionInput));
+		if (!Number.isFinite(days) || days < 0) {
+			message = { type: 'error', text: 'History retention must be 0 or more days.' };
+			return;
+		}
+		saveAll(servers, { ...settings, history_retention_days: days });
+	}
+
 	function handleCancel() {
 		editing = null;
 		adding = false;
@@ -187,6 +201,18 @@
 		{#if message}
 			<div class="message {message.type}">{message.text}</div>
 		{/if}
+
+		<section class="settings">
+			<h2>Settings</h2>
+			<div class="setting-row">
+				<label for="retention">History retention (days)</label>
+				<input id="retention" type="number" min="0" step="1" bind:value={retentionInput} />
+				<button class="btn-blue" onclick={saveSettings} disabled={retentionInput === settings.history_retention_days}>Save</button>
+			</div>
+			<p class="setting-hint">Status history older than this is purged daily around 01:00. 0 keeps history forever.</p>
+		</section>
+
+		<h2>Server list</h2>
 
 		{#if servers.length === 0}
 			<div class="empty">
@@ -228,6 +254,45 @@
 	}
 	h1 {
 		font-size: 1.25rem;
+	}
+	h2 {
+		font-size: 1rem;
+		color: var(--color-text-muted);
+	}
+	.settings {
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.setting-row {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+	}
+	.setting-row label {
+		font-size: 0.875rem;
+	}
+	.setting-row input {
+		width: 6rem;
+		background: var(--color-bg);
+		color: var(--color-text);
+		border: 1px solid var(--color-border);
+		border-radius: 4px;
+		padding: 0.5rem 0.75rem;
+		font-size: 0.875rem;
+	}
+	.setting-row input:focus {
+		outline: 1px solid var(--color-blue);
+		border-color: var(--color-blue);
+	}
+	.setting-hint {
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
 	}
 	.message {
 		padding: 0.5rem 0.75rem;

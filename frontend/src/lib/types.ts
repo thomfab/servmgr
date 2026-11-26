@@ -41,3 +41,10 @@ export interface PowerLogEntry {
 	success: boolean;
 	message: string;
 }
+
+export interface Stats {
+	db_size_bytes: number;
+	history_oldest: string | null;
+	history_retention_days: number;
+	last_purge: string | null;
+}

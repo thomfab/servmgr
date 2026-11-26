@@ -19,10 +19,17 @@ interface ServerEntry {
 	power_on_timeout_secs?: number;
 }
 
-export function serversToYaml(entries: ServerEntry[]): string {
-	if (entries.length === 0) return 'servers: []\n';
+export interface AppSettings {
+	history_retention_days: number;
+}
 
-	let yaml = 'servers:\n';
+export const DEFAULT_SETTINGS: AppSettings = { history_retention_days: 30 };
+
+export function serversToYaml(entries: ServerEntry[], settings: AppSettings = DEFAULT_SETTINGS): string {
+	let yaml = `history_retention_days: ${settings.history_retention_days}\n`;
+	if (entries.length === 0) return yaml + 'servers: []\n';
+
+	yaml += 'servers:\n';
 	for (const s of entries) {
 		yaml += `  - id: ${s.id}\n`;
 		yaml += `    name: "${s.name}"\n`;
@@ -64,9 +71,10 @@ export function serversToYaml(entries: ServerEntry[]): string {
 	return yaml;
 }
 
-export function parseConfigYaml(text: string): { servers: ServerEntry[] } {
+export function parseConfigYaml(text: string): { servers: ServerEntry[]; settings: AppSettings } {
 	const lines = text.split('\n');
 	const result: ServerEntry[] = [];
+	const settings: AppSettings = { ...DEFAULT_SETTINGS };
 	let current: any = null;
 	let inHealthChecks = false;
 	let currentCheck: any = null;
@@ -74,6 +82,13 @@ export function parseConfigYaml(text: string): { servers: ServerEntry[] } {
 	for (const line of lines) {
 		const trimmed = line.trimStart();
 		const indent = line.length - trimmed.length;
+
+		// Top-level settings (server fields are always indented)
+		const settingMatch = indent === 0 && trimmed.match(/^history_retention_days:\s*(\d+)/);
+		if (settingMatch) {
+			settings.history_retention_days = parseInt(settingMatch[1]);
+			continue;
+		}
 
 		if (trimmed.startsWith('- id:')) {
 			if (current) {
@@ -144,5 +159,5 @@ export function parseConfigYaml(text: string): { servers: ServerEntry[] } {
 	if (currentCheck && current) current.health_checks.push(currentCheck);
 	if (current) result.push(current);
 
-	return { servers: result };
+	return { servers: result, settings };
 }

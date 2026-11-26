@@ -753,7 +753,7 @@ mod tests {
             db::ensure_server_exists(&pool, &s.id).await.unwrap();
         }
 
-        let validated = validate_config(&AppConfig { servers });
+        let validated = validate_config(&AppConfig { servers, ..AppConfig::default() });
         let config = create_config_handle(validated);
         let event_bus = EventBus::new(16);
         (AppState::new(pool, config, event_bus), db_file)

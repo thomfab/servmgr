@@ -63,6 +63,7 @@ docker run -d \
 On first run, create `/path/to/config/config.yaml`. You can also edit the config directly in the browser under the **Config** tab.
 
 ```yaml
+history_retention_days: 30
 servers:
   - id: nas
     name: "NAS"
@@ -128,6 +129,10 @@ servers:
 | `health_checks` | List of checks (see below) |
 | `check_interval_secs` | Seconds between health checks (default: 30) |
 | `power_timeout_secs` | Duration of the turning_on/turning_off window during power transitions (default: 300) |
+
+### History retention
+
+The top-level `history_retention_days` (default: 30) sets how many days of status history are kept in the SQLite DB. Older rows are purged daily around 01:00 (container local time; set `TZ` to change it). If the service was down at that time, the purge runs at the next start. Set it to `0` to keep history forever. You can also change it under **Config → Settings**. The top bar shows the current DB size and how many days of history it holds.
 
 ### Health check types
 

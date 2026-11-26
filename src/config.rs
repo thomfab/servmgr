@@ -12,6 +12,7 @@ use crate::types::{AppConfig, ServerConfig};
 pub struct ValidatedConfig {
     pub servers: Vec<ServerConfig>,
     pub cycle_errors: HashMap<String, String>,
+    pub history_retention_days: u32,
 }
 
 pub fn load_config(path: &Path) -> Result<AppConfig, String> {
@@ -32,6 +33,7 @@ pub fn validate_config(config: &AppConfig) -> ValidatedConfig {
     ValidatedConfig {
         servers: config.servers.clone(),
         cycle_errors,
+        history_retention_days: config.history_retention_days,
     }
 }
 

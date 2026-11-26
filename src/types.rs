@@ -75,12 +75,22 @@ fn default_power_timeout() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// Days of status history kept in the DB; older rows are purged nightly. 0 = keep forever.
+    #[serde(default = "default_history_retention_days")]
+    pub history_retention_days: u32,
     pub servers: Vec<ServerConfig>,
+}
+
+fn default_history_retention_days() -> u32 {
+    30
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { servers: vec![] }
+        Self {
+            history_retention_days: default_history_retention_days(),
+            servers: vec![],
+        }
     }
 }
 

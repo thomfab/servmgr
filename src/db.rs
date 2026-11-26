@@ -71,6 +71,15 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // Migration: add counter column for existing DBs (SQLite < 3.37: no NOT NULL without default).
     let _ = sqlx::query("ALTER TABLE status_history ADD COLUMN counter INTEGER DEFAULT 0")
         .execute(pool)
@@ -361,4 +370,48 @@ pub async fn get_history(
         .collect();
 
     Ok(entries)
+}
+
+pub async fn get_meta(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query("SELECT value FROM meta WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.get("value")))
+}
+
+pub async fn set_meta(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Deletes status history older than `cutoff`, then VACUUMs so the file actually shrinks.
+/// Returns the number of rows deleted.
+pub async fn purge_history_before(pool: &SqlitePool, cutoff: DateTime<Utc>) -> Result<u64, sqlx::Error> {
+    let deleted = sqlx::query("DELETE FROM status_history WHERE timestamp < ?")
+        .bind(cutoff.to_rfc3339())
+        .execute(pool)
+        .await?
+        .rows_affected();
+    if deleted > 0 {
+        sqlx::query("VACUUM").execute(pool).await?;
+    }
+    Ok(deleted)
+}
+
+pub async fn get_db_size_bytes(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let page_count: i64 = sqlx::query_scalar("PRAGMA page_count").fetch_one(pool).await?;
+    let page_size: i64 = sqlx::query_scalar("PRAGMA page_size").fetch_one(pool).await?;
+    Ok(page_count * page_size)
+}
+
+pub async fn get_oldest_history_timestamp(pool: &SqlitePool) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+    let oldest: Option<String> = sqlx::query_scalar("SELECT MIN(timestamp) FROM status_history")
+        .fetch_one(pool)
+        .await?;
+    Ok(oldest.and_then(|s| s.parse().ok()))
 }

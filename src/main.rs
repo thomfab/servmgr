@@ -5,6 +5,7 @@ mod engine;
 mod events;
 mod health;
 mod power;
+mod retention;
 mod types;
 
 use std::net::SocketAddr;
@@ -70,6 +71,9 @@ async fn main() {
 
     // Start health check tasks
     state.start_health_checks().await;
+
+    // Daily status history purge (~01:00 local, catches up if missed)
+    retention::start_purge_task(Arc::clone(&state));
 
     // Start config file watcher
     let (reload_tx, mut reload_rx) = watch::channel(());

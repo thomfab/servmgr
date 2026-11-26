@@ -1,4 +1,4 @@
-import type { ServerState, HistoryEntry, PowerLogEntry } from './types';
+import type { ServerState, HistoryEntry, PowerLogEntry, Stats } from './types';
 
 const BASE = '/api';
 
@@ -59,6 +59,11 @@ export async function getHistory(id: string, from?: string, to?: string): Promis
 
 export async function getPowerLog(id: string): Promise<PowerLogEntry[]> {
 	const res = await fetch(`${BASE}/servers/${id}/powerlog`);
+	return res.json();
+}
+
+export async function getStats(): Promise<Stats> {
+	const res = await fetch(`${BASE}/stats`);
 	return res.json();
 }
 
